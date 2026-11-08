@@ -3,6 +3,7 @@ import type { Unit } from './schemas/master-data.js';
 import type {
   AdjustmentReason,
   MovementReferenceType,
+  StockBucket,
   MovementType,
   StockDocumentType,
 } from './schemas/stock.js';
@@ -101,6 +102,8 @@ export interface StockLevelDto {
   onHand: number;
   reserved: number;
   available: number;
+  /** Isolated units (returns awaiting inspection, damaged goods); never available. */
+  quarantine: number;
   /** Threshold in effect: the warehouse override, else the product default. */
   reorderPoint: number;
   reorderPointOverride: number | null;
@@ -116,7 +119,9 @@ export interface UserRef {
 export interface StockMovementDto {
   id: string;
   type: MovementType;
+  bucket: StockBucket;
   quantity: number;
+  /** Balance of the movement's bucket (usable or quarantine) after it. */
   balanceAfter: number;
   unitCost: number;
   product: ProductRef;
@@ -134,7 +139,12 @@ export interface StockAdjustmentLineDto {
   quantityChange: number;
   previousOnHand: number;
   balanceAfter: number;
+  /** Quarantine balance before and after, for quarantine documents. */
+  previousQuarantine: number | null;
+  quarantineAfter: number | null;
   unitCost: number;
+  /** Per-line reason, used by stock count postings. */
+  reason: AdjustmentReason | null;
 }
 
 export interface StockAdjustmentDto {
@@ -147,6 +157,11 @@ export interface StockAdjustmentDto {
   lines: StockAdjustmentLineDto[];
   totalIn: number;
   totalOut: number;
+  /** The adjustment this one reverses, and the one that reversed this. */
+  reversalOf: { id: string; number: string } | null;
+  reversedBy: { id: string; number: string } | null;
+  /** Count or transfer that produced this document. */
+  source: { type: 'stockCount' | 'transfer'; id: string; number: string } | null;
   createdBy: UserRef;
   createdAt: string;
 }

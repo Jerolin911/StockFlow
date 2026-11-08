@@ -69,18 +69,14 @@ export function MovementsTable({
               <TableCell>
                 <span className="font-mono text-xs">{m.warehouse.code}</span>
               </TableCell>
-              <TableCell>{MOVEMENT_TYPE_LABELS[m.type]}</TableCell>
               <TableCell>
-                <Link
-                  to={
-                    m.reference.type === 'goodsReceipt'
-                      ? `/goods-receipts/${m.reference.id}`
-                      : m.reference.type === 'shipment'
-                        ? `/shipments/${m.reference.id}`
-                        : `/stock/adjustments/${m.reference.id}`
-                  }
-                  className="font-mono text-xs hover:underline"
-                >
+                {MOVEMENT_TYPE_LABELS[m.type]}
+                {m.bucket === 'quarantine' ? (
+                  <div className="text-xs text-amber-800">Quarantine</div>
+                ) : null}
+              </TableCell>
+              <TableCell>
+                <Link to={referencePath(m.reference)} className="font-mono text-xs hover:underline">
                   {m.reference.number}
                 </Link>
               </TableCell>
@@ -105,4 +101,21 @@ export function MovementsTable({
       </TableBody>
     </Table>
   );
+}
+
+const REFERENCE_PATHS: Record<StockMovementDto['reference']['type'], string> = {
+  opening: '/stock/adjustments',
+  adjustment: '/stock/adjustments',
+  quarantine: '/stock/adjustments',
+  release: '/stock/adjustments',
+  write_off: '/stock/adjustments',
+  goodsReceipt: '/goods-receipts',
+  shipment: '/shipments',
+  transfer: '/stock/transfers',
+  customerReturn: '/customer-returns',
+  supplierReturn: '/supplier-returns',
+};
+
+function referencePath(reference: StockMovementDto['reference']) {
+  return `${REFERENCE_PATHS[reference.type]}/${reference.id}`;
 }

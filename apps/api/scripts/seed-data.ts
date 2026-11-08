@@ -5,6 +5,14 @@ import {
   createSupplierSchema,
   confirmPickSchema,
   createShipmentSchema,
+  createStockCountSchema,
+  customerReturnSchema,
+  dispatchTransferSchema,
+  quarantineActionSchema,
+  receiveCustomerReturnSchema,
+  receiveTransferSchema,
+  supplierReturnSchema,
+  transferSchema,
   dispatchShipmentSchema,
   goodsReceiptSchema,
   openingStockSchema,
@@ -44,7 +52,21 @@ import {
   dispatch,
   pack,
 } from '../src/modules/sales/shipments.js';
+import {
+  createCustomerReturn,
+  receiveCustomerReturn,
+} from '../src/modules/returns/customer-returns.js';
+import { CustomerReturn, SupplierReturn } from '../src/modules/returns/models.js';
+import { createSupplierReturn } from '../src/modules/returns/supplier-returns.js';
 import { postAdjustment, registerOpeningStock } from '../src/modules/stock/adjustments.service.js';
+import { postQuarantineAction } from '../src/modules/stock/quarantine.service.js';
+import { StockCount, StockTransfer } from '../src/modules/warehouse-ops/models.js';
+import { createStockCount } from '../src/modules/warehouse-ops/stock-counts.js';
+import {
+  createTransfer,
+  dispatchTransfer,
+  receiveTransfer,
+} from '../src/modules/warehouse-ops/transfers.js';
 import { User } from '../src/modules/users/user.model.js';
 import { Warehouse } from '../src/modules/warehouses/warehouse.model.js';
 
@@ -246,6 +268,130 @@ export async function seedDatabase(): Promise<void> {
 
   await seedProcurement(users, supplierIds, productIds, warehouseId);
   await seedSales(users, customerIds, productIds, warehouseId);
+  await seedWarehouseOps(users, supplierIds, productIds, warehouseId);
+}
+
+/**
+ * Transfers (received, in transit, awaiting approval), a customer return awaiting
+ * inspection, quarantined damaged stock with an approved supplier return, and a count in
+ * progress, all through the real services.
+ */
+async function seedWarehouseOps(
+  users: SeedUser[],
+  supplierIds: string[],
+  productIds: string[],
+  warehouseId: (code: string) => string,
+) {
+  const actor = actorFor(users);
+  const staff = actor('staff');
+  const inventory = actor('inventory_manager');
+  const sales = actor('sales_manager');
+  const procurement = actor('procurement_manager');
+  const packright = supplierIds[3]!;
+
+  const approval = (by: Actor) => ({
+    $set: { status: 'approved', approvedBy: snapshot(by), approvedAt: new Date() },
+    $push: { history: historyEntry(by, 'approved') },
+  });
+  const transfer = (from: string, to: string, lines: [number, number][], notes = '') =>
+    createTransfer(
+      transferSchema.parse({
+        fromWarehouseId: warehouseId(from),
+        toWarehouseId: warehouseId(to),
+        notes,
+        lines: lines.map(([i, quantity]) => ({ productId: productIds[i], quantity })),
+      }),
+      staff,
+    );
+
+  // Cartons moved to the north depot and received in full.
+  const cartons = await transfer('MAIN', 'NORTH', [[13, 100]], 'North depot packing line');
+  await StockTransfer.updateOne({ _id: cartons }, approval(inventory));
+  await dispatchTransfer(cartons, dispatchTransferSchema.parse({ carrier: 'Own van' }), staff);
+  const cartonsDoc = await StockTransfer.findById(cartons).lean();
+  await receiveTransfer(
+    cartons,
+    receiveTransferSchema.parse({
+      lines: [{ lineId: cartonsDoc!.lines[0]!._id.toString(), receivedQuantity: 100 }],
+    }),
+    staff,
+  );
+
+  // Paper and cables on the road to the north depot.
+  const onTheRoad = await transfer('MAIN', 'NORTH', [
+    [0, 30],
+    [9, 50],
+  ]);
+  await StockTransfer.updateOne({ _id: onTheRoad }, approval(inventory));
+  await dispatchTransfer(
+    onTheRoad,
+    dispatchTransferSchema.parse({ carrier: 'Northline Freight', reference: 'NLF-40032210' }),
+    staff,
+  );
+
+  // The city store asks the north depot for sticky notes.
+  await transfer('NORTH', 'STORE', [[3, 10]], 'Counter display restock');
+
+  // Two sticky-note packs from the delivered dental order came back crushed.
+  const dentalOrder = await SalesOrder.findOne({
+    'customer.name': 'Harbour View Dental',
+    status: 'delivered',
+  }).lean();
+  const stickyLine = dentalOrder!.lines.find((l) => l.productId.toString() === productIds[3])!;
+  const rma = await createCustomerReturn(
+    customerReturnSchema.parse({
+      salesOrderId: dentalOrder!._id.toString(),
+      reason: 'damaged',
+      notes: 'Outer box crushed in delivery',
+      lines: [{ soLineId: stickyLine._id.toString(), quantity: 2 }],
+    }),
+    sales,
+  );
+  await CustomerReturn.updateOne({ _id: rma }, approval(sales));
+  const rmaDoc = await CustomerReturn.findById(rma).lean();
+  await receiveCustomerReturn(
+    rma,
+    receiveCustomerReturnSchema.parse({
+      lines: [{ lineId: rmaDoc!.lines[0]!._id.toString(), receivedQuantity: 2 }],
+    }),
+    staff,
+  );
+
+  // Bubble wrap with water damage isolated, and a return to PackRight approved.
+  await postQuarantineAction(
+    quarantineActionSchema.parse({
+      warehouseId: warehouseId('MAIN'),
+      action: 'quarantine',
+      reason: 'damage',
+      notes: 'Rolls soaked by the roof leak',
+      lines: [{ productId: productIds[15], quantity: 2 }],
+    }),
+    inventory.id,
+  );
+  const srn = await createSupplierReturn(
+    supplierReturnSchema.parse({
+      supplierId: packright,
+      warehouseId: warehouseId('MAIN'),
+      reason: 'damaged',
+      notes: 'Water damage; PackRight agreed to replace',
+      lines: [{ productId: productIds[15], quantity: 2, source: 'quarantine' }],
+    }),
+    inventory,
+  );
+  await SupplierReturn.updateOne({ _id: srn }, approval(procurement));
+
+  // A count of office supplies at the north depot, part-way through.
+  const categoryId = (await Category.findOne({ code: 'OFF' }).lean())!._id.toString();
+  const countId = await createStockCount(
+    createStockCountSchema.parse({ warehouseId: warehouseId('NORTH'), categoryId }),
+    staff,
+  );
+  const count = await StockCount.findById(countId);
+  count!.lines.slice(0, 3).forEach((line, index) => {
+    // The first two match; the third is two short.
+    line.countedQuantity = line.snapshotQuantity - (index === 2 ? 2 : 0);
+  });
+  await count!.save();
 }
 
 const actorFor =

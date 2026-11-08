@@ -2,7 +2,7 @@ import { Types, type ClientSession } from 'mongoose';
 import type { openingStockSchema, stockAdjustmentSchema } from '@stockflow/shared';
 import type { z } from 'zod';
 import { nextDocumentNumber } from '../../lib/counters.js';
-import { AppError, invalidState } from '../../lib/errors.js';
+import { AppError, invalidState, notFound } from '../../lib/errors.js';
 import { inTransaction } from '../../lib/transaction.js';
 import { Product, type ProductRecord } from '../products/product.model.js';
 import { Warehouse } from '../warehouses/warehouse.model.js';
@@ -219,6 +219,100 @@ export async function postAdjustment(input: AdjustmentInput, actorId: string): P
       ],
       { session },
     );
+    return documentId.toString();
+  });
+}
+
+/**
+ * Corrects a posted adjustment by posting its exact opposite as a new adjustment. The
+ * original and its movements stay untouched; both documents link to each other.
+ */
+export async function reverseAdjustment(
+  id: string,
+  reason: string,
+  actorId: string,
+): Promise<string> {
+  return inTransaction(async (session) => {
+    const original = await StockAdjustment.findById(id).session(session).lean();
+    if (!original) throw notFound('Stock adjustment');
+    if (original.type !== 'adjustment') {
+      throw invalidState(
+        original.type === 'opening'
+          ? 'Opening stock can’t be reversed. Post an adjustment to correct it.'
+          : 'Quarantine documents are corrected with the opposite quarantine action.',
+      );
+    }
+    if (original.reversalOf) {
+      throw invalidState('This document is itself a reversal. Post a new adjustment instead.');
+    }
+    if (original.reversedBy) {
+      throw invalidState(`Already reversed by ${original.reversedBy.number}`);
+    }
+    const warehouse = await requireActiveWarehouse(original.warehouseId.toString(), session);
+
+    const documentId = new Types.ObjectId();
+    const number = await nextDocumentNumber('ADJ', session);
+    const createdBy = new Types.ObjectId(actorId);
+    const lines = [];
+    for (const line of original.lines) {
+      const change = -line.quantityChange;
+      if (change > 0) await updateAverageCost(line.productId, change, line.unitCost, session);
+      try {
+        const { previousOnHand, balanceAfter } = await applyMovement(
+          {
+            productId: line.productId,
+            warehouseId: warehouse._id,
+            type: 'ADJUSTMENT',
+            quantity: change,
+            unitCost: line.unitCost,
+            reference: { type: 'adjustment', id: documentId, number },
+            createdBy,
+          },
+          session,
+        );
+        lines.push({
+          productId: line.productId,
+          sku: line.sku,
+          name: line.name,
+          unit: line.unit,
+          quantityChange: change,
+          previousOnHand,
+          balanceAfter,
+          unitCost: line.unitCost,
+          reason: line.reason ?? null,
+        });
+      } catch (error) {
+        if (!(error instanceof InsufficientStockError)) throw error;
+        throw new AppError(
+          409,
+          'INSUFFICIENT_STOCK',
+          `Can’t reverse: only ${Math.max(error.available, 0)} ${line.unit} of ${line.sku} available in ${warehouse.code}`,
+        );
+      }
+    }
+
+    await StockAdjustment.create(
+      [
+        {
+          _id: documentId,
+          number,
+          type: 'adjustment',
+          warehouseId: warehouse._id,
+          reason: 'correction',
+          notes: `Reverses ${original.number}: ${reason}`,
+          lines,
+          reversalOf: { _id: original._id, number: original.number },
+          createdBy,
+        },
+      ],
+      { session },
+    );
+    const marked = await StockAdjustment.updateOne(
+      { _id: original._id, reversedBy: null },
+      { $set: { reversedBy: { _id: documentId, number } } },
+      { session },
+    );
+    if (marked.modifiedCount === 0) throw invalidState(`${original.number} was already reversed`);
     return documentId.toString();
   });
 }

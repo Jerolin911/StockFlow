@@ -2,6 +2,7 @@ import { Types, type FilterQuery, type PipelineStage } from 'mongoose';
 import type {
   ProductAvailabilityDto,
   ListAdjustmentsQuery,
+  ListQuarantineQuery,
   ListMovementsQuery,
   ListStockLevelsQuery,
   StockAdjustmentDto,
@@ -22,6 +23,7 @@ interface LevelRow {
   _id: Types.ObjectId;
   onHand: number;
   reserved: number;
+  quarantine?: number;
   available: number;
   threshold: number;
   reorderPoint: number | null;
@@ -56,6 +58,7 @@ const toLevelDto = (row: LevelRow): StockLevelDto => ({
   onHand: row.onHand,
   reserved: row.reserved,
   available: row.available,
+  quarantine: row.quarantine ?? 0,
   reorderPoint: row.threshold,
   reorderPointOverride: row.reorderPoint,
   isLow: row.isLow,
@@ -166,6 +169,7 @@ export async function getStockLevel(id: string): Promise<StockLevelDto> {
 interface PopulatedMovement {
   _id: Types.ObjectId;
   type: StockMovementDto['type'];
+  bucket?: StockMovementDto['bucket'];
   quantity: number;
   balanceAfter: number;
   unitCost: number;
@@ -187,6 +191,8 @@ export async function listMovements(query: ListMovementsQuery) {
   if (query.warehouseId) filter.warehouseId = oid(query.warehouseId);
   if (query.type) filter.type = query.type;
   if (query.direction) filter.quantity = query.direction === 'in' ? { $gt: 0 } : { $lt: 0 };
+  if (query.bucket)
+    filter.bucket = query.bucket === 'quarantine' ? 'quarantine' : { $ne: 'quarantine' };
   if (query.from || query.to) {
     filter.createdAt = {
       ...(query.from ? { $gte: new Date(`${query.from}T00:00:00.000Z`) } : {}),
@@ -210,6 +216,7 @@ export async function listMovements(query: ListMovementsQuery) {
     data: rows.map((row): StockMovementDto => ({
       id: row._id.toString(),
       type: row.type,
+      bucket: row.bucket ?? 'usable',
       quantity: row.quantity,
       balanceAfter: row.balanceAfter,
       unitCost: row.unitCost,
@@ -246,6 +253,9 @@ interface PopulatedAdjustment {
   reason: StockAdjustmentDto['reason'];
   notes: string;
   lines: (Omit<StockAdjustmentDto['lines'][number], 'productId'> & { productId: Types.ObjectId })[];
+  reversalOf?: { _id: Types.ObjectId; number: string } | null;
+  reversedBy?: { _id: Types.ObjectId; number: string } | null;
+  source?: { type: 'stockCount' | 'transfer'; _id: Types.ObjectId; number: string } | null;
   createdBy: { _id: Types.ObjectId; name: string } | null;
   createdAt: Date;
 }
@@ -259,8 +269,13 @@ function toAdjustmentDto(row: PopulatedAdjustment): StockAdjustmentDto {
     quantityChange: line.quantityChange,
     previousOnHand: line.previousOnHand,
     balanceAfter: line.balanceAfter,
+    previousQuarantine: line.previousQuarantine ?? null,
+    quarantineAfter: line.quarantineAfter ?? null,
     unitCost: line.unitCost,
+    reason: line.reason ?? null,
   }));
+  const ref = (r: { _id: Types.ObjectId; number: string } | null | undefined) =>
+    r ? { id: r._id.toString(), number: r.number } : null;
   return {
     id: row._id.toString(),
     number: row.number,
@@ -275,6 +290,11 @@ function toAdjustmentDto(row: PopulatedAdjustment): StockAdjustmentDto {
     lines,
     totalIn: lines.reduce((sum, l) => sum + Math.max(l.quantityChange, 0), 0),
     totalOut: lines.reduce((sum, l) => sum + Math.max(-l.quantityChange, 0), 0),
+    reversalOf: ref(row.reversalOf),
+    reversedBy: ref(row.reversedBy),
+    source: row.source
+      ? { type: row.source.type, id: row.source._id.toString(), number: row.source.number }
+      : null,
     createdBy: row.createdBy
       ? { id: row.createdBy._id.toString(), name: row.createdBy.name }
       : { id: '', name: 'Unknown user' },
@@ -333,8 +353,43 @@ export async function productAvailability(productIds: string[]): Promise<Product
           onHand,
           reserved,
           available: onHand - reserved,
+          quarantine: level?.quarantine ?? 0,
         };
       })
-      .filter((w) => w.warehouse.isActive || w.onHand > 0),
+      .filter((w) => w.warehouse.isActive || w.onHand > 0 || w.quarantine > 0),
+  }));
+}
+
+/** Product × warehouse combinations holding quarantined units. */
+export async function listQuarantine(query: ListQuarantineQuery) {
+  const match: FilterQuery<unknown> = { quarantine: { $gt: 0 } };
+  if (query.warehouseId) match.warehouseId = oid(query.warehouseId);
+  const after: Record<string, unknown> = {};
+  if (query.search) {
+    const pattern = new RegExp(escapeRegex(query.search), 'i');
+    after.$or = [{ 'product.sku': pattern }, { 'product.name': pattern }];
+  }
+  const result = await StockLevel.aggregate([
+    ...levelStages(match),
+    { $match: after },
+    { $sort: { 'product.sku': 1, 'warehouse.code': 1, _id: 1 } },
+    ...paginateStages(query),
+  ]);
+  return pageResult(result, query, (row: LevelRow & { quarantine: number }) => ({
+    id: row._id.toString(),
+    product: {
+      id: row.product._id.toString(),
+      sku: row.product.sku,
+      name: row.product.name,
+      unit: row.product.unit,
+    },
+    warehouse: {
+      id: row.warehouse._id.toString(),
+      code: row.warehouse.code,
+      name: row.warehouse.name,
+    },
+    quarantine: row.quarantine,
+    onHand: row.onHand,
+    updatedAt: row.updatedAt.toISOString(),
   }));
 }

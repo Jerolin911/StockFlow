@@ -104,6 +104,7 @@ export function toSalesOrderDto(so: SalesOrderRecord, warehouses: WarehouseLooku
       shippedQuantity: l.shippedQuantity,
       deliveredQuantity: l.deliveredQuantity,
       cancelledQuantity: l.cancelledQuantity,
+      returnedQuantity: l.returnedQuantity ?? 0,
       reservedQuantity: open ? reservedFor(l) : 0,
       unallocatedQuantity: open ? unallocatedFor(l) : 0,
       unitPrice: l.unitPrice,
@@ -158,6 +159,7 @@ async function buildSalesLines(lines: OrderInput['lines'], session?: ClientSessi
       shippedQuantity: 0,
       deliveredQuantity: 0,
       cancelledQuantity: 0,
+      returnedQuantity: 0,
       unitPrice,
       discountRate: line.discountRate,
       taxRate: product.taxRate,
@@ -366,6 +368,19 @@ export async function listSalesOrders(query: ListSalesOrdersQuery) {
   if (query.status) filter.status = query.status;
   if (query.open || query.toFulfil) filter.status = OPEN;
   if (query.toFulfil) filter.$expr = hasUnallocated;
+  if (query.returnable) {
+    filter.$expr = {
+      $anyElementTrue: [
+        {
+          $map: {
+            input: '$lines',
+            as: 'l',
+            in: { $gt: ['$$l.shippedQuantity', { $ifNull: ['$$l.returnedQuantity', 0] }] },
+          },
+        },
+      ],
+    };
+  }
   if (query.customerId) filter['customer._id'] = new Types.ObjectId(query.customerId);
   if (query.warehouseId) filter.warehouseId = new Types.ObjectId(query.warehouseId);
   if (query.productId) filter['lines.productId'] = new Types.ObjectId(query.productId);

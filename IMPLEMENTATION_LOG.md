@@ -397,3 +397,112 @@ Delivered under roadmap phase 5 (Order fulfilment). Roadmap phase 3 (stock trans
 - The web bundle is now 950 kB minified (278 kB gzipped). Route-level code splitting would help.
 - After signing in as a different user, the app can return to the previous session's page. Harmless, but sending users to the dashboard when the page isn't permitted would be friendlier.
 - Customer returns aren't handled (out of scope); a failed delivery stays in transit until it's delivered.
+
+## Phase 5 — Warehouse operations, counts, quarantine and returns (2026-11-08)
+
+Delivered under roadmap phase 3 (Warehouse operations). Returns were out of scope in Phase 0; this phase brings them in on request. Refunds and credit notes stay out of scope; returns move goods only.
+
+### Completed
+
+- **Quarantine bucket:**
+  - Each stock level now has `quarantine` beside `onHand`, and each movement records its `bucket` (usable or quarantine).
+  - `applyMovement` guards each bucket: usable withdrawals keep `onHand − reserved ≥ 0`; quarantine withdrawals need enough quarantined units.
+  - Quarantined units are never available. The quarantine page and `POST /stock/quarantine` move usable stock in, release it back or write it off, each as a numbered document (QTN) with a movement per bucket change.
+- **Transfers:**
+  - Requested by staff or inventory managers and approved by someone other than the requester (admins excepted).
+  - Dispatch can send less than requested and is refused for more than is available at the source. Dispatched units are in transit, in neither warehouse.
+  - Receipts can be partial, with good units into usable stock and damaged units into the destination's quarantine.
+  - Closing short records what never arrived at the destination and writes it off in a loss adjustment linked to the transfer.
+  - Product pages show stock in transit.
+- **Physical counts:**
+  - A count sheet covers every active product held in a warehouse, or one category, with on-hand recorded at the start. One count per warehouse can be open at a time.
+  - Counting is blind by default and saved line by line, so several people can count at once.
+  - Variances are measured against on-hand at posting. Each needs a reason (damaged, lost, found or miscount), and a count below the reserved quantity is refused.
+  - Posting creates one adjustment (reason: count) with a reason per line, linked to the count.
+- **Adjustment reversals:** `POST /stock/adjustments/:id/reverse` posts the opposite quantities as a new adjustment linked to the original, which is marked reversed. It applies once (atomic guard). Opening stock, quarantine documents and reversals themselves can't be reversed.
+- **Customer returns:**
+  - Raised against shipped quantities. A `returnedQuantity` counter on each order line, written in the same transaction, prevents returning the same units twice.
+  - Approved by sales, received by warehouse staff into quarantine (`CUSTOMER_RETURN`), then inspected: restocked units move to usable stock (`RELEASE`) at the cost they shipped at, and the rest stay quarantined.
+  - Rejection, cancellation and short receipts free the counter.
+- **Supplier returns:** raised from quarantine or usable stock, priced from a linked purchase order where possible, approved by procurement and sent by warehouse staff (`SUPPLIER_RETURN` out of each line's source bucket).
+- **Permissions:**
+  - `transfers:approve`: admin, inventory manager.
+  - `stock:count`: admin, inventory manager, staff. Posting counts needs `stock:adjust`.
+  - `customerReturns:write`: admin, sales manager.
+  - `supplierReturns:write`: admin, inventory manager, procurement manager.
+  - `supplierReturns:approve`: admin, procurement manager.
+  - `returns:process`: admin, inventory manager, staff.
+- **Web:**
+  - Transfers (list, request form with source availability, detail with approve, dispatch, partial receipt and close short), stock counts (list, start dialog, count sheet, review with reasons), quarantine, customer returns (form from a shipped order, receive, inspect) and supplier returns (form, approve, send).
+  - Adjustment detail gains reversal, links to source counts and transfers, per-line reasons and quarantine columns.
+  - Stock levels and product pages show quarantine; product pages show in-transit transfers. Sales orders link to their returns and offer "Create return". Ledger rows link to every source document.
+  - Dashboard tiles for warehouse operations.
+- **Seed:** a received transfer, one in transit and one awaiting approval; a customer return awaiting inspection; quarantined bubble wrap with an approved supplier return; a count in progress at the north depot.
+
+### Fixed or improved during this phase
+
+- Route-level code splitting: the 39 feature pages load on first visit. The initial bundle fell from 1,041 kB to 777 kB minified (295 kB to 240 kB gzipped).
+- The API document helpers and sub-schemas already moved to `modules/common/` were reused for the new modules. `docs/ARCHITECTURE.md` and `CLAUDE.md` no longer list returns as out of scope.
+- Lazy pages exposed an E2E step that read a heading before navigation finished; it now waits for the detail heading.
+
+### Changed files
+
+- `packages/shared/src/`: `schemas/{warehouse-ops,returns,stock,sales}.ts`, `dto-warehouse.ts`, `dto.ts`, `dto-sales.ts`, `permissions.ts`, `index.ts`
+- `apps/api/src/`:
+  - `modules/warehouse-ops/{models,transfers,stock-counts,summary}.ts`
+  - `modules/returns/{models,customer-returns,supplier-returns}.ts`
+  - `modules/stock/{stock.service,quarantine.service,adjustments.service,stock.queries,stock.routes,stock-level.model,stock-movement.model,stock-adjustment.model}.ts`
+  - `modules/sales/{models,sales-orders}.ts` (returned quantity, returnable filter)
+  - `app.ts`
+- `apps/api/scripts/seed-data.ts`; `apps/api/tests/{warehouse-ops.test,returns.test,fixtures,seed.test}.ts`
+- `apps/web/src/`:
+  - `features/warehouse/**`, `features/returns/**`
+  - `features/stock/{AdjustmentDetailPage,AdjustmentsPage,MovementsTable,StockLevelsPage,StockDocumentBadge,api}.tsx`
+  - `features/catalog/ProductDetailPage.tsx`, `features/sales/SalesOrderDetailPage.tsx`, `features/dashboard/DashboardPage.tsx`
+  - `components/{document-parts,StatusBadge}.tsx`, `app/{router,navigation}.ts(x)`
+- `apps/web/e2e/{warehouse,auth}.spec.ts`
+- `docs/ARCHITECTURE.md`, `README.md`, `CLAUDE.md`
+
+### Test results
+
+- `packages/shared`: 21 unit tests passed.
+- `apps/api`: 143 integration tests passed, 24 of them new. They cover:
+  - Transfers:
+    - Full flow, with stock in neither warehouse while in transit.
+    - Partial receipts with damaged units into quarantine and over-receipt refused.
+    - Closing short with a loss adjustment linked to the transfer.
+    - Partial dispatch, and dispatch refused beyond what's available.
+    - Self-approval blocked, admin approval allowed, cancellation refused after dispatch, rejection, permissions.
+    - Four concurrent dispatches against 20 units: exactly three succeed.
+  - Counts:
+    - Variances posted with per-line reasons, with the reason direction validated.
+    - Variance measured at posting after stock moved mid-count.
+    - One open count per warehouse, every product counted before submitting, two counters saving at once without losing either.
+    - A count below reserved stock refused.
+  - Quarantine: move in, release, write-off, insufficient quarantine refused, permissions, movement history by bucket.
+  - Reversals: the linked opposite document, refused twice, a reversal can't itself be reversed, exactly one of three concurrent reversals succeeds, opening stock refused.
+  - Customer returns:
+    - Receive into quarantine, then inspect and restock.
+    - The return cap, freed by rejection and short receipts.
+    - Unshipped orders refused, permissions and states.
+    - Restocking at the shipped cost moves the average from 700 to 600.
+  - Supplier returns: from quarantine and usable stock, an approval permission separate from creation, insufficient source refused, pricing from a purchase order with the supplier check, exactly one of three concurrent dispatches succeeds.
+  - Every test ends with the extended consistency check: each bucket's ledger matches its balance, transfer movements match dispatched and received quantities, return counters match active returns, and return movements match their documents.
+  - The new suites were run three extra times to check for flakiness.
+- `apps/web`: 6 unit tests passed.
+- Playwright: 32 E2E tests passed, 5 of them new:
+  - A transfer across staff and the inventory manager: request, approve, dispatch, partial receipt with damage, then close short with the loss adjustment.
+  - Finishing the seeded count, blind by default, and posting a variance with a reason.
+  - A customer return: request, approve, receive into quarantine, then inspect with a split between restock and quarantine.
+  - Sending the approved supplier return out of quarantine.
+  - A quarantine change through the dialog, then reversing an adjustment, with both documents linked.
+- `npm run lint`, `npm run typecheck`, `prettier --check` and `npm run build` pass. All 14 architecture diagrams render.
+- Manual check in the browser (page text, since the window was hidden): transfers list and detail, counts, quarantine and the dashboard with seeded data.
+
+### Pending issues
+
+- Docker images and CI are still unverified (no running Docker engine, no Git remote).
+- The initial web bundle is 777 kB minified (240 kB gzipped), mostly shared libraries.
+- After signing in as a different user, the app can return to the previous session's page.
+- Transfers don't reserve stock at approval; availability is enforced at dispatch, so an approved transfer can be short if stock sells in between.
+- An orphaned Vite dev server from an earlier session is still running on port 5173; stopping it needs a manual `Stop-Process`.

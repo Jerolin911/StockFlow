@@ -28,6 +28,8 @@ const salesOrderLineSchema = new Schema({
   shippedQuantity: { type: Number, required: true, min: 0, default: 0 },
   deliveredQuantity: { type: Number, required: true, min: 0, default: 0 },
   cancelledQuantity: { type: Number, required: true, min: 0, default: 0 },
+  // On active customer returns: requested until received, then what was received. ≤ shipped.
+  returnedQuantity: { type: Number, required: true, min: 0, default: 0 },
   unitPrice: { type: Number, required: true, min: 0 },
   discountRate: { type: Number, required: true, min: 0, max: 10_000 },
   taxRate: { type: Number, required: true, min: 0 },

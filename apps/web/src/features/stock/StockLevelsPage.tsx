@@ -81,13 +81,14 @@ export function StockLevelsPage() {
               <TableHead className="text-right">On hand</TableHead>
               <TableHead className="text-right">Reserved</TableHead>
               <TableHead className="text-right">Available</TableHead>
+              <TableHead className="hidden text-right lg:table-cell">Quarantine</TableHead>
               <TableHead className="hidden text-right md:table-cell">Threshold</TableHead>
               <TableHead className="pr-4">Status</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             <TableBodyState
-              colSpan={7}
+              colSpan={8}
               isPending={levels.isPending}
               isError={levels.isError}
               isEmpty={rows.length === 0}
@@ -124,6 +125,11 @@ export function StockLevelsPage() {
                     <span className="text-muted-foreground text-xs font-normal">
                       {level.product.unit}
                     </span>
+                  </TableCell>
+                  <TableCell
+                    className={`hidden text-right tabular-nums lg:table-cell ${level.quarantine > 0 ? 'text-amber-800' : 'text-muted-foreground'}`}
+                  >
+                    {level.quarantine > 0 ? level.quarantine.toLocaleString() : '—'}
                   </TableCell>
                   <TableCell className="text-muted-foreground hidden text-right tabular-nums md:table-cell">
                     {level.reorderPoint > 0 ? level.reorderPoint : 'Off'}

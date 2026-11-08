@@ -9,7 +9,7 @@ StockFlow is an inventory, procurement, warehouse operations and order fulfilmen
 
 ## Scope rules
 
-- Out of scope: invoices (supplier or customer), payment records, payment status, reimbursements, payment gateways, OAuth or external identity providers, multiple tenants, returns, backorders. Order prices and totals are informational only.
+- Out of scope: invoices (supplier or customer), payment records, payment status, reimbursements, payment gateways, OAuth or external identity providers, multiple tenants, backorders, credit notes or refunds for returns. Order prices and totals are informational only; returns move goods, not money.
 - No mock functionality, placeholders, TODOs or fabricated metrics. Business logic lives on the backend; the frontend uses the shared schemas for previews only, and the server recalculates.
 
 ## Commands
@@ -64,17 +64,21 @@ Zod gotcha: field helpers and update schemas have no `.default()`, because Zod 4
 - `stockLevels` holds current `onHand`/`reserved` per product × warehouse; `stockMovements` is an append-only ledger. Only `modules/stock/stock.service.ts` writes quantities:
   - `applyMovement` changes on-hand. Withdrawals use a conditional filter (`onHand − reserved ≥ q`); `fromReserved: true` lowers on-hand and reserved together.
   - `reserveStock` and `releaseReservation` change only `reserved`.
+  - Each stock level has two balances: `onHand` (usable) and `quarantine` (isolated: returns awaiting inspection, damaged goods). Movements carry `bucket: 'usable' | 'quarantine'`; `applyMovement({ bucket })` picks one, and `moveBetweenBuckets` (`quarantine.service.ts`) writes the pair of movements for quarantine/release/write-off. Quarantine is never part of available.
 - Every stock change writes a movement in the same transaction. Wrap postings in `inTransaction()` (`lib/transaction.ts`), which retries write conflicts and duplicate-key insert races. Guards are conditional updates, never read-then-write, so concurrent requests can't oversell.
 - Procurement (`modules/purchasing`): stock increases only by accepted GRN quantities; outstanding = ordered − accepted.
 - Fulfilment (`modules/sales`): confirmation reserves every line, all or nothing. Pick lists allocate units on order lines without moving stock. On-hand falls only at dispatch, as `SHIPMENT` movements at average cost. Cancellation releases unshipped reservations.
-- `apps/api/tests/fixtures.ts` `expectLedgerConsistent()` runs after every stock-touching test (in `afterEach`). It checks ledger = on-hand, reserved = what open orders hold, order-line counters = their shipments, and `SHIPMENT` movements = what was dispatched. Never set `onHand`/`reserved` directly in tests; go through the API or services.
+- Warehouse ops (`modules/warehouse-ops`): transfers go requested → approved → dispatched (`TRANSFER_OUT` at source) → received in parts (`TRANSFER_IN`; damaged units into the destination's quarantine) or closed short (received then written off in a loss adjustment). Counts post variances against on-hand at posting time as one adjustment with per-line reasons; one open count per warehouse (partial unique index on `isOpen`).
+- Returns (`modules/returns`): customer returns are capped by the order line's `returnedQuantity` counter, received into quarantine (`CUSTOMER_RETURN`), then inspected (restocked units `RELEASE` to usable at their shipped cost). Supplier returns leave from their line's source bucket at dispatch (`SUPPLIER_RETURN`).
+- History is never edited or deleted: a posted adjustment is corrected by `POST /stock/adjustments/:id/reverse`, which posts the opposite quantities and links both documents.
+- `apps/api/tests/fixtures.ts` `expectLedgerConsistent()` runs after every stock-touching test (in `afterEach`). It checks each bucket's ledger = its balance, reserved = what open orders hold, order-line counters = their shipments and returns, and that `SHIPMENT`, `TRANSFER_*`, `CUSTOMER_RETURN` and `SUPPLIER_RETURN` movements match their documents. Never set `onHand`/`reserved` directly in tests; go through the API or services.
 
 ### Tests
 
 - API tests use Supertest against `createApp()` with a `mongodb-memory-server` replica set. The global setup provides the URI, each file gets its own database, and collections are cleared before each test. Helpers: `tokenFor(app, role)`, `api(app, token)`, and fixture creators in `tests/fixtures.ts`.
 - Concurrency tests fire parallel requests and assert exactly-N successes. Rerun a suite a few times after touching transactional code.
 - E2E (`apps/web/e2e`) runs serially with one worker against one seeded database, so specs see each other's changes. Read before/after values within a test instead of hard-coding stock figures. Assert statuses via the badge next to the `h1` (status words also appear in table headers, history and progress strips).
-- The seed test (`tests/seed.test.ts`) pins counts such as 5 low-stock combinations and the per-status sales orders; update it when seed data changes.
+- The seed test (`tests/seed.test.ts`) pins counts such as 5 low-stock combinations, the per-status sales orders and the warehouse-ops summary; update it when seed data changes.
 
 ### Web (`apps/web/src`)
 

@@ -15,6 +15,8 @@ export interface SalesOrderLineDto {
   deliveredQuantity: number;
   /** Released without shipping when the order or its remainder was cancelled. */
   cancelledQuantity: number;
+  /** On customer returns (requested, or received once back). */
+  returnedQuantity: number;
   /** Held against stock: quantity − shipped − cancelled while the order is open. */
   reservedQuantity: number;
   /** Not yet on any shipment: quantity − allocated − shipped − cancelled. */
@@ -62,6 +64,7 @@ export interface WarehouseAvailabilityDto {
   onHand: number;
   reserved: number;
   available: number;
+  quarantine: number;
 }
 
 export interface ProductAvailabilityDto {

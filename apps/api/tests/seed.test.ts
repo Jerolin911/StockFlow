@@ -36,6 +36,19 @@ describe('demo seed', () => {
       shipmentsInTransit: 1,
     });
 
+    const ops = await admin.get('/warehouse-ops/summary');
+    expect(ops.body.data).toEqual({
+      transfersToApprove: 1,
+      transfersToDispatch: 0,
+      transfersInTransit: 1,
+      countsInProgress: 1,
+      returnsToApprove: 0,
+      returnsToReceive: 0,
+      returnsToInspect: 1,
+      supplierReturnsOpen: 1,
+      quarantinedUnits: 4,
+    });
+
     const products = await admin.get('/products?pageSize=100');
     const existing = products.body.data[0];
     const duplicateSku = await admin.post('/products', {

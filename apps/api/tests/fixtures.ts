@@ -2,7 +2,9 @@ import type { Express } from 'express';
 import request from 'supertest';
 import { expect } from 'vitest';
 import type { CategoryDto, CustomerDto, ProductDto, Role, WarehouseDto } from '@stockflow/shared';
+import { CustomerReturn, SupplierReturn } from '../src/modules/returns/models.js';
 import { SalesOrder, Shipment } from '../src/modules/sales/models.js';
+import { StockTransfer } from '../src/modules/warehouse-ops/models.js';
 import { StockLevel } from '../src/modules/stock/stock-level.model.js';
 import { StockMovement } from '../src/modules/stock/stock-movement.model.js';
 import { bearer, createAndLogin } from './helpers.js';
@@ -94,34 +96,115 @@ export async function onHand(productId: string, warehouseId: string) {
 export async function expectLedgerConsistent() {
   const levels = await StockLevel.find().lean();
   const sums = await StockMovement.aggregate<{
-    _id: { productId: string; warehouseId: string };
+    _id: { productId: string; warehouseId: string; bucket: string };
     total: number;
+    last: number;
   }>([
     { $sort: { createdAt: 1, _id: 1 } },
     {
       $group: {
-        _id: { productId: '$productId', warehouseId: '$warehouseId' },
+        _id: {
+          productId: '$productId',
+          warehouseId: '$warehouseId',
+          bucket: { $ifNull: ['$bucket', 'usable'] },
+        },
         total: { $sum: '$quantity' },
         last: { $last: '$balanceAfter' },
       },
     },
   ]);
   const byKey = new Map(
-    sums.map((s) => [`${String(s._id.productId)}:${String(s._id.warehouseId)}`, s]),
+    sums.map((s) => [`${String(s._id.productId)}:${String(s._id.warehouseId)}:${s._id.bucket}`, s]),
   );
 
   for (const level of levels) {
     const key = `${String(level.productId)}:${String(level.warehouseId)}`;
-    const ledger = byKey.get(key) as { total: number; last: number } | undefined;
-    expect(level.onHand, `on-hand vs ledger for ${key}`).toBe(ledger?.total ?? 0);
-    if (ledger) expect(ledger.last, `last balance for ${key}`).toBe(level.onHand);
+    for (const [bucket, balance] of [
+      ['usable', level.onHand],
+      ['quarantine', level.quarantine ?? 0],
+    ] as const) {
+      const ledger = byKey.get(`${key}:${bucket}`);
+      expect(balance, `${bucket} vs ledger for ${key}`).toBe(ledger?.total ?? 0);
+      if (ledger) expect(ledger.last, `last ${bucket} balance for ${key}`).toBe(balance);
+      byKey.delete(`${key}:${bucket}`);
+    }
     expect(level.onHand).toBeGreaterThanOrEqual(0);
+    expect(level.quarantine ?? 0).toBeGreaterThanOrEqual(0);
     expect(level.reserved).toBeGreaterThanOrEqual(0);
     expect(level.reserved).toBeLessThanOrEqual(level.onHand);
-    byKey.delete(key);
   }
   expect([...byKey.keys()], 'movements without a stock level').toEqual([]);
   await expectReservationsConsistent(levels);
+  await expectWarehouseOpsConsistent();
+}
+
+/**
+ * Transfers: TRANSFER_OUT movements equal what was dispatched and TRANSFER_IN movements what
+ * was received, damaged or written off. Returns: order-line return counters match active
+ * returns, and each return's movements match its quantities.
+ */
+async function expectWarehouseOpsConsistent() {
+  const movementsFor = async (type: string, referenceType: string) => {
+    const rows = await StockMovement.aggregate<{ _id: unknown; total: number }>([
+      { $match: { type, 'reference.type': referenceType } },
+      { $group: { _id: '$reference.id', total: { $sum: '$quantity' } } },
+    ]);
+    return new Map(rows.map((r) => [String(r._id), r.total]));
+  };
+
+  const transfers = await StockTransfer.find().lean();
+  const out = await movementsFor('TRANSFER_OUT', 'transfer');
+  const into = await movementsFor('TRANSFER_IN', 'transfer');
+  for (const t of transfers) {
+    const sum = (pick: (l: (typeof t.lines)[number]) => number) =>
+      t.lines.reduce((s, l) => s + pick(l), 0);
+    for (const l of t.lines) {
+      expect(l.receivedQuantity + l.damagedQuantity + l.lostQuantity).toBeLessThanOrEqual(
+        l.dispatchedQuantity,
+      );
+      expect(l.dispatchedQuantity).toBeLessThanOrEqual(l.quantity);
+    }
+    expect(0 - (out.get(String(t._id)) ?? 0), `${t.number} dispatched`).toBe(
+      sum((l) => l.dispatchedQuantity),
+    );
+    expect(into.get(String(t._id)) ?? 0, `${t.number} received`).toBe(
+      sum((l) => l.receivedQuantity + l.damagedQuantity + l.lostQuantity),
+    );
+  }
+
+  const returns = await CustomerReturn.find().lean();
+  const returned = new Map<string, number>();
+  const received = await movementsFor('CUSTOMER_RETURN', 'customerReturn');
+  for (const r of returns) {
+    const total = r.lines.reduce((s, l) => s + l.receivedQuantity, 0);
+    expect(received.get(String(r._id)) ?? 0, `${r.number} received`).toBe(total);
+    for (const l of r.lines) {
+      if (r.status === 'completed') {
+        expect(l.restockedQuantity + l.quarantinedQuantity).toBe(l.receivedQuantity);
+      }
+      const active = ['requested', 'approved'].includes(r.status)
+        ? l.quantity
+        : ['received', 'completed'].includes(r.status)
+          ? l.receivedQuantity
+          : 0;
+      returned.set(String(l.soLineId), (returned.get(String(l.soLineId)) ?? 0) + active);
+    }
+  }
+  for (const so of await SalesOrder.find().lean()) {
+    for (const l of so.lines) {
+      expect(l.returnedQuantity ?? 0, `${so.number} ${l.sku} returned`).toBe(
+        returned.get(String(l._id)) ?? 0,
+      );
+      expect(l.returnedQuantity ?? 0).toBeLessThanOrEqual(l.shippedQuantity);
+    }
+  }
+
+  const supplierReturns = await SupplierReturn.find().lean();
+  const sent = await movementsFor('SUPPLIER_RETURN', 'supplierReturn');
+  for (const r of supplierReturns) {
+    const expected = r.status === 'dispatched' ? r.lines.reduce((s, l) => s + l.quantity, 0) : 0;
+    expect(0 - (sent.get(String(r._id)) ?? 0), `${r.number} sent`).toBe(expected);
+  }
 }
 
 /**

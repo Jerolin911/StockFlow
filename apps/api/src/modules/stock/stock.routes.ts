@@ -3,21 +3,26 @@ import {
   availabilityQuerySchema,
   listAdjustmentsQuerySchema,
   listMovementsQuerySchema,
+  listQuarantineQuerySchema,
   listStockLevelsQuerySchema,
   openingStockSchema,
+  quarantineActionSchema,
+  reversalSchema,
   stockAdjustmentSchema,
   updateThresholdSchema,
 } from '@stockflow/shared';
 import { notFound } from '../../lib/errors.js';
 import { parseId } from '../../lib/http.js';
 import { authenticate, authorize, requireAuth } from '../../middleware/auth.js';
-import { postAdjustment, registerOpeningStock } from './adjustments.service.js';
+import { postAdjustment, registerOpeningStock, reverseAdjustment } from './adjustments.service.js';
+import { postQuarantineAction } from './quarantine.service.js';
 import { StockLevel } from './stock-level.model.js';
 import {
   getAdjustment,
   getStockLevel,
   listAdjustments,
   listMovements,
+  listQuarantine,
   listStockLevels,
   productAvailability,
 } from './stock.queries.js';
@@ -59,6 +64,25 @@ export function createStockRouter(): Router {
   router.post('/adjustments', authorize('stock:adjust'), async (req, res) => {
     const id = await postAdjustment(
       stockAdjustmentSchema.parse(req.body),
+      requireAuth(req).user.id,
+    );
+    res.status(201).json({ data: await getAdjustment(id) });
+  });
+
+  router.post('/adjustments/:id/reverse', authorize('stock:adjust'), async (req, res) => {
+    const id = parseId(req.params.id, 'Stock adjustment');
+    const { reason } = reversalSchema.parse(req.body);
+    const reversal = await reverseAdjustment(id, reason, requireAuth(req).user.id);
+    res.status(201).json({ data: await getAdjustment(reversal) });
+  });
+
+  router.get('/quarantine', async (req, res) => {
+    res.json(await listQuarantine(listQuarantineQuerySchema.parse(req.query)));
+  });
+
+  router.post('/quarantine', authorize('stock:adjust'), async (req, res) => {
+    const id = await postQuarantineAction(
+      quarantineActionSchema.parse(req.body),
       requireAuth(req).user.id,
     );
     res.status(201).json({ data: await getAdjustment(id) });

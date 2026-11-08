@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { ClipboardList, Loader2 } from 'lucide-react';
+import { ClipboardList, Loader2, Undo2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { basisPointsToPercent, type SalesOrderDto } from '@stockflow/shared';
 import { BackLink } from '@/components/BackLink';
@@ -22,6 +22,8 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { useCurrentUser } from '@/features/auth/auth-context';
+import { useCustomerReturns } from '@/features/returns/api';
+import { CustomerReturnStatusBadge } from '@/features/returns/components';
 import { useMoney } from '@/features/settings/api';
 import { ApiError } from '@/lib/api-client';
 import { formatDate, formatDateTime } from '@/lib/format';
@@ -68,6 +70,9 @@ function OrderDetail({ order: so }: { order: SalesOrderDto }) {
 
   const canWrite = permissions.includes('salesOrders:write');
   const canShip = permissions.includes('shipments:create');
+  const canReturn = permissions.includes('customerReturns:write');
+  const returns = useCustomerReturns({ salesOrderId: so.id, pageSize: 50 }, so.status !== 'draft');
+  const returnable = so.lines.some((l) => l.shippedQuantity > l.returnedQuantity);
   const open = so.status === 'confirmed' || so.status === 'partially_shipped';
 
   const sum = (pick: (l: SalesOrderDto['lines'][number]) => number) =>
@@ -120,6 +125,16 @@ function OrderDetail({ order: so }: { order: SalesOrderDto }) {
     buttons.push(
       <Button key="cancel" variant="ghost" onClick={() => setDialog('cancel')}>
         {totals.shipped > 0 ? 'Cancel remaining' : 'Cancel order'}
+      </Button>,
+    );
+  }
+  if (canReturn && returnable) {
+    buttons.push(
+      <Button key="return" variant="outline" asChild>
+        <Link to={`/customer-returns/new?salesOrderId=${so.id}`}>
+          <Undo2 />
+          Create return
+        </Link>
       </Button>,
     );
   }
@@ -323,6 +338,46 @@ function OrderDetail({ order: so }: { order: SalesOrderDto }) {
                       </TableRow>
                     ))
                   )}
+                </TableBody>
+              </Table>
+            </Card>
+          ) : null}
+          {(returns.data?.data ?? []).length > 0 ? (
+            <Card className="gap-0 overflow-hidden pb-0">
+              <CardHeader className="pb-4">
+                <CardTitle>Returns</CardTitle>
+              </CardHeader>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="pl-6">Number</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead className="text-right">Units</TableHead>
+                    <TableHead className="pr-6 text-right">Restocked</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {returns.data!.data.map((r) => (
+                    <TableRow key={r.id}>
+                      <TableCell className="pl-6">
+                        <Link
+                          to={`/customer-returns/${r.id}`}
+                          className="font-mono text-xs font-medium hover:underline"
+                        >
+                          {r.number}
+                        </Link>
+                      </TableCell>
+                      <TableCell>
+                        <CustomerReturnStatusBadge status={r.status} />
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {r.totals.requested}
+                      </TableCell>
+                      <TableCell className="pr-6 text-right tabular-nums">
+                        {r.status === 'completed' ? r.totals.restocked : '—'}
+                      </TableCell>
+                    </TableRow>
+                  ))}
                 </TableBody>
               </Table>
             </Card>

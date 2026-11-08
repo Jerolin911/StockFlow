@@ -15,6 +15,7 @@ import { StockBadge } from '@/components/StatusBadge';
 import { useCurrentUser } from '@/features/auth/auth-context';
 import { usePurchaseOrders, usePurchaseRequests } from '@/features/purchasing/api';
 import { useFulfilmentSummary } from '@/features/sales/api';
+import { useWarehouseOpsSummary } from '@/features/warehouse/api';
 import { useStockLevels } from '@/features/stock/api';
 import { useUserStats } from '@/features/users/api';
 import { cn } from '@/lib/utils';
@@ -95,10 +96,19 @@ const ACCESS_AREAS: { title: string; permissions: Permission[] }[] = [
       'categories:manage',
       'warehouses:manage',
       'stock:adjust',
-      'stock:transfer',
+      'stock:count',
     ],
   },
-  { title: 'Warehouse operations', permissions: ['goodsReceipts:create', 'shipments:create'] },
+  {
+    title: 'Warehouse operations',
+    permissions: [
+      'stock:transfer',
+      'transfers:approve',
+      'goodsReceipts:create',
+      'shipments:create',
+      'returns:process',
+    ],
+  },
   {
     title: 'Procurement',
     permissions: [
@@ -107,9 +117,14 @@ const ACCESS_AREAS: { title: string; permissions: Permission[] }[] = [
       'suppliers:write',
       'purchaseOrders:write',
       'purchaseOrders:approve',
+      'supplierReturns:write',
+      'supplierReturns:approve',
     ],
   },
-  { title: 'Sales', permissions: ['customers:write', 'salesOrders:write'] },
+  {
+    title: 'Sales',
+    permissions: ['customers:write', 'salesOrders:write', 'customerReturns:write'],
+  },
   {
     title: 'Reports',
     permissions: ['reports:inventory', 'reports:purchasing', 'reports:fulfilment'],
@@ -135,12 +150,14 @@ export function DashboardPage() {
       {salesFirst ? (
         <>
           <FulfilmentTiles />
+          <WarehouseTiles />
           <PurchasingTiles />
         </>
       ) : (
         <>
           <PurchasingTiles />
           <FulfilmentTiles />
+          <WarehouseTiles />
         </>
       )}
       <div className="grid gap-6 lg:grid-cols-3">
@@ -314,6 +331,33 @@ function FulfilmentTiles() {
           total: s?.shipmentsInTransit,
           to: '/shipments?view=inTransit',
         },
+      ]}
+    />
+  );
+}
+
+function WarehouseTiles() {
+  const s = useWarehouseOpsSummary().data;
+  return (
+    <Tiles
+      label="Warehouse operations"
+      tiles={[
+        {
+          label: 'Transfers to approve or dispatch',
+          total: s ? s.transfersToApprove + s.transfersToDispatch : undefined,
+          to: '/stock/transfers?status=requested',
+        },
+        {
+          label: 'Transfers in transit',
+          total: s?.transfersInTransit,
+          to: '/stock/transfers?inTransit=true',
+        },
+        {
+          label: 'Returns to approve, receive or inspect',
+          total: s ? s.returnsToApprove + s.returnsToReceive + s.returnsToInspect : undefined,
+          to: '/customer-returns',
+        },
+        { label: 'Units in quarantine', total: s?.quarantinedUnits, to: '/stock/quarantine' },
       ]}
     />
   );

@@ -13,3 +13,6 @@ export * from './dto-procurement.js';
 export * from './schemas/procurement.js';
 export * from './dto-sales.js';
 export * from './schemas/sales.js';
+export * from './dto-warehouse.js';
+export * from './schemas/warehouse-ops.js';
+export * from './schemas/returns.js';

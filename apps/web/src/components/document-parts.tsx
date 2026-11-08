@@ -40,6 +40,15 @@ const ACTION_LABELS: Record<string, string> = {
   dispatched: 'Dispatched',
   tracking: 'Tracking update',
   delivered: 'Delivered',
+  requested: 'Requested',
+  count_started: 'Count started',
+  posted: 'Posted',
+  inspected: 'Inspected',
+  return_requested: 'Return requested',
+  return_rejected: 'Return rejected',
+  return_cancelled: 'Return cancelled',
+  return_received: 'Return received',
+  return_inspected: 'Return inspected',
 };
 
 export function History({ entries }: { entries: HistoryEntryDto[] }) {

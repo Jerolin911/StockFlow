@@ -2,7 +2,8 @@ import { Schema, model } from 'mongoose';
 
 /**
  * Current quantity of one product in one warehouse. Only stock.service.ts writes
- * onHand/reserved, always together with a stock movement in the same transaction.
+ * onHand/reserved/quarantine; quantity changes always come with a stock movement in the
+ * same transaction.
  */
 const stockLevelSchema = new Schema(
   {
@@ -10,6 +11,8 @@ const stockLevelSchema = new Schema(
     warehouseId: { type: Schema.Types.ObjectId, ref: 'Warehouse', required: true },
     onHand: { type: Number, required: true, min: 0, default: 0 },
     reserved: { type: Number, required: true, min: 0, default: 0 },
+    // Isolated units: physically present but not usable and never part of onHand.
+    quarantine: { type: Number, required: true, min: 0, default: 0 },
     // Overrides the product's reorder point for this warehouse when set.
     reorderPoint: { type: Number, min: 0, default: null },
   },

@@ -1,5 +1,10 @@
 import {
   ArrowLeftRight,
+  ClipboardCheck,
+  PackageX,
+  Repeat,
+  ShieldAlert,
+  Undo2,
   Boxes,
   ClipboardList,
   ClipboardPen,
@@ -41,6 +46,9 @@ export const NAV_SECTIONS: NavSection[] = [
       { to: '/stock', label: 'Stock levels', icon: Boxes, end: true },
       { to: '/stock/movements', label: 'Movements', icon: ArrowLeftRight },
       { to: '/stock/adjustments', label: 'Adjustments', icon: ClipboardList },
+      { to: '/stock/transfers', label: 'Transfers', icon: Repeat },
+      { to: '/stock/counts', label: 'Stock counts', icon: ClipboardCheck },
+      { to: '/stock/quarantine', label: 'Quarantine', icon: ShieldAlert },
       { to: '/categories', label: 'Categories', icon: Tags },
       { to: '/warehouses', label: 'Warehouses', icon: Warehouse },
     ],
@@ -60,6 +68,13 @@ export const NAV_SECTIONS: NavSection[] = [
       { to: '/sales-orders', label: 'Sales orders', icon: ShoppingCart },
       { to: '/shipments', label: 'Shipments', icon: PackageOpen },
       { to: '/customers', label: 'Customers', icon: Contact },
+    ],
+  },
+  {
+    label: 'Returns',
+    items: [
+      { to: '/customer-returns', label: 'Customer returns', icon: Undo2 },
+      { to: '/supplier-returns', label: 'Supplier returns', icon: PackageX },
     ],
   },
   {

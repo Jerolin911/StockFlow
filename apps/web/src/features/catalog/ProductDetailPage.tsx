@@ -30,6 +30,8 @@ import { formatDate, formatDateTime } from '@/lib/format';
 import { PurchaseOrderStatusBadge } from '@/features/purchasing/components';
 import { useProductSupplierPrices, usePurchaseOrders } from '@/features/purchasing/api';
 import { useSalesOrders } from '@/features/sales/api';
+import { useTransfers } from '@/features/warehouse/api';
+import { TransferStatusBadge } from '@/features/warehouse/components';
 import { SalesOrderStatusBadge } from '@/features/sales/components';
 import { useProduct } from './api';
 import { ProductFormDialog } from './ProductFormDialog';
@@ -156,13 +158,14 @@ export function ProductDetailPage() {
                 <TableHead className="text-right">On hand</TableHead>
                 <TableHead className="text-right">Reserved</TableHead>
                 <TableHead className="text-right">Available</TableHead>
+                <TableHead className="text-right">Quarantine</TableHead>
                 <TableHead className="text-right">Threshold</TableHead>
                 <TableHead className="pr-6">Status</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               <TableBodyState
-                colSpan={6}
+                colSpan={7}
                 isPending={levels.isPending}
                 isError={levels.isError}
                 isEmpty={(levels.data?.data.length ?? 0) === 0}
@@ -179,6 +182,15 @@ export function ProductDetailPage() {
                     <TableCell className="text-right tabular-nums">{level.reserved}</TableCell>
                     <TableCell className="text-right font-medium tabular-nums">
                       {level.available}
+                    </TableCell>
+                    <TableCell
+                      className={
+                        level.quarantine > 0
+                          ? 'text-right text-amber-800 tabular-nums'
+                          : 'text-muted-foreground text-right tabular-nums'
+                      }
+                    >
+                      {level.quarantine}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
                       {canWrite ? (
@@ -233,6 +245,7 @@ export function ProductDetailPage() {
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <ReservedCard productId={p.id} unit={p.unit} />
+        <InTransitCard productId={p.id} unit={p.unit} />
         <OnOrderCard productId={p.id} unit={p.unit} />
         <SupplierPricesCard productId={p.id} />
       </div>
@@ -323,6 +336,52 @@ function ThresholdForm({ level, onDone }: { level: StockLevelDto; onDone: () => 
         onCancel={onDone}
       />
     </>
+  );
+}
+
+/** Transfers carrying this product between warehouses. */
+function InTransitCard({ productId, unit }: { productId: string; unit: string }) {
+  const transfers = useTransfers({ productId, inTransit: 'true', pageSize: 20 });
+  const rows = (transfers.data?.data ?? []).map((t) => ({
+    t,
+    line: t.lines.find((l) => l.productId === productId)!,
+  }));
+  const total = rows.reduce((sum, r) => sum + r.line.inTransitQuantity, 0);
+  if (rows.length === 0) return null;
+  return (
+    <Card className="gap-0 overflow-hidden pb-0">
+      <CardHeader className="pb-4">
+        <CardTitle>In transit</CardTitle>
+        <p className="text-muted-foreground text-sm">
+          {total} {unit} between warehouses, in neither until received
+        </p>
+      </CardHeader>
+      <Table>
+        <TableBody>
+          {rows.map(({ t, line }) => (
+            <TableRow key={t.id}>
+              <TableCell className="pl-6">
+                <Link
+                  to={`/stock/transfers/${t.id}`}
+                  className="font-mono text-xs font-medium hover:underline"
+                >
+                  {t.number}
+                </Link>
+                <div className="text-muted-foreground font-mono text-xs">
+                  {t.fromWarehouse.code} → {t.toWarehouse.code}
+                </div>
+              </TableCell>
+              <TableCell>
+                <TransferStatusBadge status={t.status} />
+              </TableCell>
+              <TableCell className="pr-6 text-right font-medium tabular-nums">
+                {line.inTransitQuantity}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </Card>
   );
 }
 

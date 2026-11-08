@@ -1,5 +1,5 @@
 import type { ClientSession, Types } from 'mongoose';
-import type { MovementReferenceType, MovementType } from '@stockflow/shared';
+import type { MovementReferenceType, MovementType, StockBucket } from '@stockflow/shared';
 import { Product } from '../products/product.model.js';
 import { StockLevel } from './stock-level.model.js';
 import { StockMovement } from './stock-movement.model.js';
@@ -13,6 +13,8 @@ export interface MovementInput {
   unitCost: number;
   reference: { type: MovementReferenceType; id: Types.ObjectId; number: string };
   createdBy: Types.ObjectId;
+  /** Usable stock (onHand, the default) or the warehouse's quarantine. */
+  bucket?: StockBucket;
   /** For withdrawals of stock already reserved: on-hand and reserved fall together. */
   fromReserved?: boolean;
 }
@@ -21,6 +23,7 @@ export class InsufficientStockError extends Error {
   constructor(
     readonly productId: Types.ObjectId,
     readonly available: number,
+    readonly bucket: StockBucket = 'usable',
   ) {
     super('Insufficient stock');
   }
@@ -28,7 +31,7 @@ export class InsufficientStockError extends Error {
 
 /**
  * The only way stock quantities change. Updates the stock level atomically and records
- * the movement in the same transaction, so the ledger always sums to on-hand.
+ * the movement in the same transaction, so each bucket's ledger always sums to its balance.
  */
 export async function applyMovement(input: MovementInput, session: ClientSession) {
   if (!Number.isInteger(input.quantity) || input.quantity === 0) {
@@ -36,16 +39,28 @@ export async function applyMovement(input: MovementInput, session: ClientSession
   }
 
   const key = { productId: input.productId, warehouseId: input.warehouseId };
+  const bucket = input.bucket ?? 'usable';
+  const field = bucket === 'usable' ? 'onHand' : 'quarantine';
+  const removing = -input.quantity;
   let level;
 
   if (input.quantity > 0) {
     level = await StockLevel.findOneAndUpdate(
       key,
-      { $inc: { onHand: input.quantity } },
+      { $inc: { [field]: input.quantity } },
       { upsert: true, new: true, setDefaultsOnInsert: true, session },
     ).lean();
+  } else if (bucket === 'quarantine') {
+    level = await StockLevel.findOneAndUpdate(
+      { ...key, quarantine: { $gte: removing } },
+      { $inc: { quarantine: input.quantity } },
+      { new: true, session },
+    ).lean();
+    if (!level) {
+      const current = await StockLevel.findOne(key).session(session).lean();
+      throw new InsufficientStockError(input.productId, current?.quarantine ?? 0, 'quarantine');
+    }
   } else if (input.fromReserved) {
-    const removing = -input.quantity;
     level = await StockLevel.findOneAndUpdate(
       { ...key, onHand: { $gte: removing }, reserved: { $gte: removing } },
       { $inc: { onHand: input.quantity, reserved: input.quantity } },
@@ -55,7 +70,6 @@ export async function applyMovement(input: MovementInput, session: ClientSession
     // so a missing reservation means the books are inconsistent, not a user error.
     if (!level) throw new Error('Reserved stock is missing for this withdrawal');
   } else {
-    const removing = -input.quantity;
     // The filter only matches when enough unreserved stock exists, so concurrent
     // withdrawals cannot push on-hand below the reserved quantity or below zero.
     level = await StockLevel.findOneAndUpdate(
@@ -72,13 +86,15 @@ export async function applyMovement(input: MovementInput, session: ClientSession
     }
   }
 
+  const balanceAfter = level[field];
   await StockMovement.create(
     [
       {
         ...key,
         type: input.type,
+        bucket,
         quantity: input.quantity,
-        balanceAfter: level.onHand,
+        balanceAfter,
         unitCost: input.unitCost,
         reference: input.reference,
         createdBy: input.createdBy,
@@ -87,7 +103,12 @@ export async function applyMovement(input: MovementInput, session: ClientSession
     { session },
   );
 
-  return { previousOnHand: level.onHand - input.quantity, balanceAfter: level.onHand };
+  return {
+    previousOnHand: level.onHand - (bucket === 'usable' ? input.quantity : 0),
+    balanceAfter: level.onHand,
+    previousQuarantine: level.quarantine - (bucket === 'quarantine' ? input.quantity : 0),
+    quarantineAfter: level.quarantine,
+  };
 }
 
 /**

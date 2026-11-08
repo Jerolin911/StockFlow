@@ -22,17 +22,17 @@ Contents
 
 ### 1.1 Scope
 
-| Area             | In scope                                                                                               |
-| ---------------- | ------------------------------------------------------------------------------------------------------ |
-| Workspace        | One company: company profile, currency, tax defaults, document number prefixes                         |
-| Users            | Email/password accounts created by an admin; five fixed roles                                          |
-| Warehouses       | Multiple stock locations; stock tracked per product per warehouse                                      |
-| Catalogue        | Categories and products (SKU, unit, prices, tax rate, reorder point)                                   |
-| Inventory        | Stock levels, movement ledger, stock adjustments, inter-warehouse transfers, low-stock list, valuation |
-| Procurement      | Suppliers, purchase orders with approval, goods receipts (partial)                                     |
-| Order fulfilment | Customers, sales orders with stock reservation, pick lists, packing, dispatch, delivery tracking       |
-| Reporting        | Dashboard, inventory valuation, purchasing and fulfilment summaries                                    |
-| Audit            | Log of who changed what and when                                                                       |
+| Area             | In scope                                                                                              |
+| ---------------- | ----------------------------------------------------------------------------------------------------- |
+| Workspace        | One company: company profile, currency, tax defaults, document number prefixes                        |
+| Users            | Email/password accounts created by an admin; five fixed roles                                         |
+| Warehouses       | Multiple stock locations; stock tracked per product per warehouse                                     |
+| Catalogue        | Categories and products (SKU, unit, prices, tax rate, reorder point)                                  |
+| Inventory        | Stock levels, movement ledger, adjustments and reversals, physical counts, quarantine, low-stock list | \n  | Warehouse ops | Transfer requests with approval, dispatch, stock in transit, partial receipts | \n  | Returns | Customer returns with inspection and restocking; supplier returns from quarantine or usable stock |
+| Procurement      | Suppliers, purchase orders with approval, goods receipts (partial)                                    |
+| Order fulfilment | Customers, sales orders with stock reservation, pick lists, packing, dispatch, delivery tracking      |
+| Reporting        | Dashboard, inventory valuation, purchasing and fulfilment summaries                                   |
+| Audit            | Log of who changed what and when                                                                      |
 
 ### 1.2 Out of scope
 
@@ -41,7 +41,7 @@ These are excluded on purpose to keep the system focused:
 - **Financial operations.** Supplier invoices, customer invoices, payment records, payment status tracking, reimbursement workflows and payment gateways. Order documents carry prices and totals so order values can be reported, but StockFlow does not bill, collect or pay.
 - OAuth or external identity providers, self-service signup, multiple tenants.
 - Multiple currencies. One workspace currency.
-- Customer and supplier returns. Stock corrections go through adjustments.
+- Credit notes or refunds for returns (financial). Returns move goods only.
 - Lot, serial and expiry tracking, bin locations, product variants, units-of-measure conversion.
 - Backorders. A sales order can be confirmed only when the chosen warehouse has enough stock available.
 
@@ -118,20 +118,51 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph Adjustment
-        A1[Create adjustment<br/>warehouse, reason, lines] --> A2[Validate:<br/>onHand + delta ≥ reserved]
-        A2 --> A3[Post: update stock levels<br/>+ ADJUSTMENT movements]
-    end
     subgraph Transfer
-        T1[Draft transfer<br/>from → to] -->|dispatch| T2[In transit<br/>source onHand −qty<br/>TRANSFER_OUT]
-        T2 -->|receive| T3[Received<br/>destination onHand +qty<br/>TRANSFER_IN]
-        T1 -->|cancel| T4[Cancelled]
+        T1[Request<br/>from → to, lines] -->|approve| T2[Approved]
+        T2 -->|dispatch<br/>source onHand −q<br/>TRANSFER_OUT| T3[In transit]
+        T3 -->|receive part or all<br/>good → usable, damaged → quarantine<br/>TRANSFER_IN| T4{All accounted for?}
+        T4 -->|no| T3
+        T4 -->|yes| T5[Received]
+        T3 -->|close short<br/>TRANSFER_IN + loss ADJUSTMENT| T6[Closed short]
+    end
+    subgraph Count
+        C1[Count sheet<br/>products held, on-hand snapshot] -->|record counts| C2[Submitted]
+        C2 -->|post: variance = counted − onHand now<br/>reason per variance| C3[ADJUSTMENT movements<br/>one adjustment, reason count]
+    end
+    subgraph Quarantine
+        Q1[Usable stock] -->|QUARANTINE| Q2[Quarantine]
+        Q2 -->|RELEASE| Q1
+        Q2 -->|WRITE_OFF| Q3[Gone]
+        Q2 -->|SUPPLIER_RETURN| Q3
     end
 ```
 
-Stock in transit is in neither warehouse. Inventory valuation adds the dispatched-but-unreceived transfer lines as a separate figure.
+- **Transfers** need approval by someone other than the requester (admins excepted). Dispatch can send less than requested and is refused for more than is available at the source. Dispatched units are in neither warehouse until received; the transfer's lines track them (`dispatched − received − damaged − lost`). Receipts can be partial; damaged units go to the destination's quarantine. If the rest never arrives, closing short records it as received at the destination and writes it off in an adjustment (reason: loss) linked to the transfer.
+- **Physical counts** cover every active product held in a warehouse, or one category. Counting is blind by default. One count per warehouse can be open at a time. Variances are measured against on-hand when posting, not when counting began, so stock that moved meanwhile isn't double-counted. Each variance needs a reason (damaged, lost, found, or miscount); a count below the reserved quantity is refused.
+- **Quarantine** is a second balance per stock level. Quarantined units are physically present but never part of on-hand or available. Damaged stock, returns awaiting inspection and transfer damage go there; they leave by release, write-off or a supplier return.
+- **Corrections never delete history.** A posted adjustment is corrected by a reversal: a new adjustment with the opposite quantities that links to the original, which is marked reversed. Opening stock is corrected with an adjustment; quarantine moves with the opposite action.
 
-### 2.4 Document state machines
+### 2.4 Returns
+
+```mermaid
+flowchart LR
+    subgraph Customer return
+        R1[Request<br/>against shipped units] -->|approve| R2[Approved]
+        R2 -->|receive<br/>CUSTOMER_RETURN → quarantine| R3[Awaiting inspection]
+        R3 -->|inspect<br/>restock: RELEASE to usable<br/>rest stays quarantined| R4[Completed]
+    end
+    subgraph Supplier return
+        S1[Request<br/>from quarantine or usable] -->|approve| S2[Approved]
+        S2 -->|send<br/>SUPPLIER_RETURN| S3[Returned]
+    end
+```
+
+- A customer return can't exceed what shipped minus units already on active returns. The order line's `returnedQuantity` holds that count and is written in the same transaction, so concurrent requests can't over-return. Rejecting, cancelling or receiving fewer units frees the difference.
+- Received units are isolated until inspected. Restocked units enter the average cost at the cost they shipped at.
+- Supplier returns take each line from its source bucket at dispatch, priced from the linked purchase order where the product is on it.
+
+### 2.5 Document state machines
 
 ```mermaid
 stateDiagram-v2
@@ -190,16 +221,51 @@ stateDiagram-v2
 stateDiagram-v2
     direction LR
     state "Stock transfer" as TRF {
-        [*] --> draft
-        draft --> in_transit : dispatch
-        in_transit --> received : receive
-        draft --> cancelled : cancel
+        [*] --> requested
+        requested --> approved : approve
+        requested --> rejected : reject
+        approved --> in_transit : dispatch
+        in_transit --> partially_received : receive (part)
+        partially_received --> partially_received : receive
+        in_transit --> received : receive (all)
+        partially_received --> received : receive (rest)
+        in_transit --> closed : close short
+        partially_received --> closed : close short
+        requested --> cancelled : cancel
+        approved --> cancelled : cancel
     }
 ```
 
-A transfer cannot be cancelled once dispatched. If the goods never arrive, the destination receives it and records a negative adjustment for the loss, so the ledger shows what happened.
+```mermaid
+stateDiagram-v2
+    direction LR
+    state "Stock count" as CNT {
+        [*] --> counting
+        counting --> submitted : submit (all counted)
+        submitted --> counting : reopen
+        submitted --> posted : post variances
+        counting --> cancelled : cancel
+        submitted --> cancelled : cancel
+    }
+```
 
-### 2.5 Goods receipt posting (transaction)
+```mermaid
+stateDiagram-v2
+    direction LR
+    state "Customer return" as RMA {
+        [*] --> requested
+        requested --> approved : approve
+        requested --> rejected : reject
+        approved --> received : receive (to quarantine)
+        received --> completed : inspect
+        requested --> cancelled : cancel
+        approved --> cancelled : cancel
+    }
+```
+
+A transfer can't be cancelled once dispatched; what arrives is received and the rest is closed short. A posted count can't be cancelled; its adjustment is reversed instead.
+
+### 2.6 Goods receipt posting (transaction)
 
 ```mermaid
 sequenceDiagram
@@ -264,6 +330,12 @@ erDiagram
     SALES_ORDER ||--o{ SHIPMENT : "fulfilled by"
     GOODS_RECEIPT ||--o{ STOCK_MOVEMENT : posts
     SHIPMENT ||--o{ STOCK_MOVEMENT : posts
+    STOCK_TRANSFER ||--o{ STOCK_MOVEMENT : posts
+    STOCK_COUNT ||--o| STOCK_ADJUSTMENT : "posts variances as"
+    SALES_ORDER ||--o{ CUSTOMER_RETURN : "returned by"
+    CUSTOMER_RETURN ||--o{ STOCK_MOVEMENT : posts
+    SUPPLIER ||--o{ SUPPLIER_RETURN : "receives"
+    SUPPLIER_RETURN ||--o{ STOCK_MOVEMENT : posts
 
     USER {
         ObjectId _id PK
@@ -291,11 +363,13 @@ erDiagram
         ObjectId warehouseId FK
         int onHand
         int reserved
+        int quarantine
     }
     STOCK_MOVEMENT {
         ObjectId productId FK
         ObjectId warehouseId FK
         string type
+        string bucket
         int quantity
         int balanceAfter
         int unitCost
@@ -305,6 +379,21 @@ erDiagram
         string number UK
         ObjectId fromWarehouseId FK
         ObjectId toWarehouseId FK
+        string status
+    }
+    STOCK_COUNT {
+        string number UK
+        ObjectId warehouseId FK
+        string status
+    }
+    CUSTOMER_RETURN {
+        string number UK
+        ObjectId salesOrderId FK
+        string status
+    }
+    SUPPLIER_RETURN {
+        string number UK
+        ObjectId supplierId FK
         string status
     }
     PURCHASE_ORDER {
@@ -461,53 +550,101 @@ suppliers / customers {       // same shape, separate collections
 stockLevels {
   productId: Ref<products>
   warehouseId: Ref<warehouses>
-  onHand: number              // physically in the warehouse
+  onHand: number              // usable units in the warehouse
   reserved: number            // committed to confirmed sales orders
+  quarantine: number          // isolated units: never part of onHand or available
   reorderPoint: number | null // per-warehouse threshold override; null = product default
 }
 // indexes: { productId: 1, warehouseId: 1 } unique, { warehouseId: 1 }
-// onHand ≥ 0 and reserved ≤ onHand are enforced by conditional updates in stock.service.ts,
-// the only code that writes onHand/reserved. Threshold edits are configuration, not movements.
+// onHand ≥ 0, quarantine ≥ 0 and reserved ≤ onHand are enforced by conditional updates in
+// stock.service.ts, the only code that writes them. Threshold edits are configuration.
 
 stockMovements {              // append-only ledger, never updated or deleted
   productId: Ref<products>; warehouseId: Ref<warehouses>
-  type: 'OPENING' | 'ADJUSTMENT'          // later: RECEIPT, SHIPMENT, TRANSFER_OUT, TRANSFER_IN
-  quantity: number            // signed: + into the warehouse, − out
-  balanceAfter: number        // onHand after this movement
-  unitCost: money             // opening: given cost; adjustment: avgCost at the time
-  reference: { type: 'opening' | 'adjustment', id: ObjectId, number: string }
+  type: 'OPENING' | 'ADJUSTMENT' | 'RECEIPT' | 'SHIPMENT' | 'TRANSFER_OUT' | 'TRANSFER_IN'
+      | 'CUSTOMER_RETURN' | 'SUPPLIER_RETURN' | 'QUARANTINE' | 'RELEASE' | 'WRITE_OFF'
+  bucket: 'usable' | 'quarantine'   // which balance moved
+  quantity: number            // signed: + into the bucket, − out
+  balanceAfter: number        // that bucket's balance after this movement
+  unitCost: money
+  reference: { type: 'opening' | 'adjustment' | 'goodsReceipt' | 'shipment' | 'transfer'
+                     | 'customerReturn' | 'supplierReturn', id: ObjectId, number: string }
   createdBy: Ref<users>; createdAt: Date
 }
-// indexes: { productId: 1, warehouseId: 1, createdAt: -1 },
-//          { warehouseId: 1, createdAt: -1 }, { createdAt: -1 }, { 'reference.id': 1 }
+// Moving between buckets writes two movements (QUARANTINE or RELEASE), one per bucket.
 
-stockAdjustments {            // opening-stock registrations and adjustments
-  number: string              // OPN-2026-00001 or ADJ-2026-00001
-  type: 'opening' | 'adjustment'
+stockAdjustments {            // opening stock, adjustments and quarantine documents
+  number: string              // OPN-, ADJ- or QTN-2026-00001
+  type: 'opening' | 'adjustment' | 'quarantine' | 'release' | 'write_off'
   warehouseId: Ref<warehouses>
-  reason: 'count' | 'damage' | 'loss' | 'found' | 'correction' | 'other' | null  // null for opening
-  notes: string               // required when reason is 'other'
-  lines: [{ productId, sku, name, unit, quantityChange /* signed, ≠ 0 */,
-            previousOnHand, balanceAfter, unitCost }]
+  reason: 'count' | 'damage' | 'loss' | 'found' | 'correction' | 'other' | null
+  notes: string
+  lines: [{ productId, sku, name, unit, quantityChange, previousOnHand, balanceAfter,
+            previousQuarantine?, quarantineAfter?, unitCost,
+            reason? }]          // per-line reason for count postings
+  reversalOf?: { _id, number }; reversedBy?: { _id, number }
+  source?: { type: 'stockCount' | 'transfer', _id, number }
   createdBy; createdAt
 }
-// posted at creation; immutable
-// indexes: { number: 1 } unique, { createdAt: -1 }, { warehouseId: 1, createdAt: -1 }
-// Opening stock is allowed only while the product has no movements in that warehouse.
-// Stock counts send countedQuantity; the change (counted − onHand) is computed in the transaction.
+// Quantities never change after posting; reversedBy is set once, atomically, by a reversal.
 
 stockTransfers {
-  number: string
-  fromWarehouseId: Ref<warehouses>; toWarehouseId: Ref<warehouses>   // must differ
-  status: 'draft' | 'in_transit' | 'received' | 'cancelled'
-  lines: [{ productId, sku, name, quantity: number, unitCost: money /* set at dispatch */ }]
-  notes?: string
-  dispatchedAt?: Date; dispatchedBy?: Ref<users>
-  receivedAt?: Date; receivedBy?: Ref<users>
-  idempotencyKey?: string
-  createdBy
+  number: string              // TRF-2026-00001
+  status: 'requested' | 'approved' | 'in_transit' | 'partially_received' | 'received'
+        | 'closed' | 'rejected' | 'cancelled'
+  fromWarehouseId; toWarehouseId   // must differ
+  neededBy?: Date; notes
+  lines: [{ _id, productId, sku, name, unit, quantity,
+            dispatchedQuantity, receivedQuantity, damagedQuantity, lostQuantity,
+            unitCost? }]      // avgCost at dispatch
+  carrier; reference
+  requestedBy; approvedBy?; approvedAt?; dispatchedAt?; dispatchedBy?
+  receipts: [{ at, by, note, lines: [{ lineId, receivedQuantity, damagedQuantity }] }]
+  rejectionReason; cancelReason; closeReason; lossAdjustment?: { _id, number }
+  history
 }
-// indexes: { number: 1 } unique, { status: 1, createdAt: -1 }, { fromWarehouseId: 1 }, { toWarehouseId: 1 }
+// in transit per line = dispatched − received − damaged − lost
+// indexes: { number: 1 } unique, { status: 1, createdAt: -1 }, { fromWarehouseId: 1, status: 1 },
+//          { toWarehouseId: 1, status: 1 }, { 'lines.productId': 1, status: 1 }
+
+stockCounts {
+  number: string              // CNT-2026-00001
+  status: 'counting' | 'submitted' | 'posted' | 'cancelled'
+  isOpen: boolean             // counting or submitted
+  warehouseId; category?: { _id, name }; notes
+  lines: [{ _id, productId, sku, name, unit, snapshotQuantity, countedQuantity?,
+            systemQuantity?, variance?, reason?, note }]   // system/variance set at posting
+  adjustment?: { _id, number }
+  createdBy; submittedBy?; postedBy?; postedAt?; history
+}
+// indexes: { number: 1 } unique, { warehouseId: 1 } unique where isOpen = true
+```
+
+#### Returns
+
+```ts
+customerReturns {
+  number: string              // RMA-2026-00001
+  status: 'requested' | 'approved' | 'received' | 'completed' | 'rejected' | 'cancelled'
+  salesOrder: { _id, number }; customer: { _id, code, name }; warehouseId
+  reason: 'damaged' | 'defective' | 'wrong_item' | 'not_needed' | 'other'; notes
+  lines: [{ _id, soLineId, productId, sku, name, unit, quantity,
+            receivedQuantity, restockedQuantity, quarantinedQuantity, note,
+            unitCost }]       // cost the units shipped at
+  requestedBy; approvedBy?; receivedAt?/By?; inspectedAt?/By?
+  rejectionReason; cancelReason; history
+}
+// salesOrders.lines.returnedQuantity = Σ active returns' units (requested, or received once back)
+
+supplierReturns {
+  number: string              // SRN-2026-00001
+  status: 'requested' | 'approved' | 'dispatched' | 'rejected' | 'cancelled'
+  supplier: { _id, code, name }; warehouseId; purchaseOrder?: { _id, number }
+  reason; notes
+  lines: [{ _id, productId, sku, name, unit, quantity, source: 'usable' | 'quarantine', unitCost }]
+  carrier; reference; requestedBy; approvedBy?; dispatchedAt?/By?
+  rejectionReason; cancelReason; history
+}
 ```
 
 #### Procurement
@@ -638,7 +775,7 @@ shipments {
 | `reserved`        | Σ `(quantity − shipped − cancelled)` over lines of open sales orders; picked and packed units stay reserved until dispatch        | Stored on `stockLevels` |
 | `available`       | `onHand − reserved`                                                                                                               | Derived                 |
 | `incoming`        | Σ `(quantity − receivedQuantity)` over lines of POs in `approved` or `partially_received` for that warehouse                      | Derived (aggregation)   |
-| `inTransit`       | Σ line quantities of transfers in `in_transit`, by destination                                                                    | Derived                 |
+| `inTransit`       | Σ `(dispatched − received − damaged − lost)` over lines of transfers in transit                                                   | Derived                 | \n  | `quarantine` | Isolated units: returns awaiting inspection, damaged goods. Never part of `onHand` or `available` | Stored on `stockLevels` |
 | Low stock         | `available ≤ (level.reorderPoint ?? product.reorderPoint)` in an active warehouse that holds the product, when that threshold > 0 | Derived                 |
 | Suggested reorder | `max(reorderQuantity, reorderPoint − available − incoming)`                                                                       | Derived                 |
 
@@ -681,20 +818,28 @@ These must hold at all times. Integration tests assert them.
 4. SO line: `allocated + shipped + cancelled ≤ quantity` and `delivered ≤ shipped`. `allocated` equals the picked (or requested) units on the line's undispatched shipments; `shipped` equals the picked units on its dispatched shipments.
 5. Σ `reserved` per (product, warehouse) equals Σ `(quantity − shipped − cancelled)` over lines of confirmed sales orders for that warehouse, and Σ `SHIPMENT` movements equals −Σ units dispatched.
 6. Every posted receipt, shipment, adjustment and transfer has matching movement records whose quantities sum to the document's lines.
-7. Posted stock documents (receipts, shipments, adjustments, dispatched transfers) are never edited or deleted. Mistakes are corrected with a new adjustment.
+7. Posted stock documents (receipts, shipments, adjustments, dispatched transfers, received returns) are never edited or deleted. Mistakes are corrected with a reversal or a new adjustment.
+8. Each bucket's balance equals the sum of its movements: `onHand` for `usable`, `quarantine` for `quarantine`.
+9. Transfer line: `received + damaged + lost ≤ dispatched ≤ quantity`; Σ `TRANSFER_OUT` equals −Σ dispatched and Σ `TRANSFER_IN` equals Σ (received + damaged + lost).
+10. Order line `returnedQuantity ≤ shipped` and equals the units on its active returns; each return's `CUSTOMER_RETURN` movements equal what it received, and once inspected `restocked + quarantined = received`.
 
 ### 4.5 How consistency is enforced
 
-| Operation         | Stock effect                                   | Guard                                                                                                                                                                                            |
-| ----------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| SO confirm        | `reserved += q`                                | `updateOne({productId, warehouseId, $expr: {$gte: [{$subtract: ['$onHand','$reserved']}, q]}}, {$inc: {reserved: q}})`. If no document matches, the transaction aborts with `INSUFFICIENT_STOCK` |
-| SO cancel         | `reserved −= (quantity − shipped − cancelled)` | Status condition on the SO; open pick lists are cancelled in the same transaction                                                                                                                |
-| Pick list         | none (allocates on the SO line)                | `q ≤ quantity − allocated − shipped − cancelled`, checked in the transaction that updates the SO                                                                                                 |
-| Dispatch          | `onHand −= q`, `reserved −= q`                 | Shipment status `packed`; `updateOne({…, onHand: {$gte: q}, reserved: {$gte: q}}, {$inc: {onHand: −q, reserved: −q}})`                                                                           |
-| Goods receipt     | `onHand += q` (upsert)                         | `q ≤ quantity − receivedQuantity` (conditional update on the PO line)                                                                                                                            |
-| Adjustment        | `onHand += delta`                              | For negative deltas: `onHand + delta ≥ reserved`                                                                                                                                                 |
-| Transfer dispatch | source `onHand −= q`                           | `onHand − reserved ≥ q`                                                                                                                                                                          |
-| Transfer receive  | destination `onHand += q` (upsert)             | Status `in_transit`                                                                                                                                                                              |
+| Operation         | Stock effect                                                                   | Guard                                                                                                                                                                                            |
+| ----------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| SO confirm        | `reserved += q`                                                                | `updateOne({productId, warehouseId, $expr: {$gte: [{$subtract: ['$onHand','$reserved']}, q]}}, {$inc: {reserved: q}})`. If no document matches, the transaction aborts with `INSUFFICIENT_STOCK` |
+| SO cancel         | `reserved −= (quantity − shipped − cancelled)`                                 | Status condition on the SO; open pick lists are cancelled in the same transaction                                                                                                                |
+| Pick list         | none (allocates on the SO line)                                                | `q ≤ quantity − allocated − shipped − cancelled`, checked in the transaction that updates the SO                                                                                                 |
+| Dispatch          | `onHand −= q`, `reserved −= q`                                                 | Shipment status `packed`; `updateOne({…, onHand: {$gte: q}, reserved: {$gte: q}}, {$inc: {onHand: −q, reserved: −q}})`                                                                           |
+| Goods receipt     | `onHand += q` (upsert)                                                         | `q ≤ quantity − receivedQuantity` (conditional update on the PO line)                                                                                                                            |
+| Adjustment        | `onHand += delta`                                                              | For negative deltas: `onHand + delta ≥ reserved`                                                                                                                                                 |
+| Transfer dispatch | source `onHand −= q`                                                           | Status `approved`; `onHand − reserved ≥ q`                                                                                                                                                       |
+| Transfer receive  | destination `onHand` (good) or `quarantine` (damaged) `+= q`                   | Status in transit; `q ≤ in transit` per line, checked in the transaction that updates the transfer                                                                                               |
+| Count posting     | `onHand += counted − onHand`                                                   | Status `submitted`; variance read inside the transaction; counted ≥ reserved                                                                                                                     |
+| Quarantine move   | `onHand −= q`, `quarantine += q` (or the reverse); write-off `quarantine −= q` | Moving in: `onHand − reserved ≥ q`; moving out: `quarantine ≥ q`                                                                                                                                 |
+| Customer return   | receive: `quarantine += q`; inspect: `quarantine −= r`, `onHand += r`          | `q ≤ shipped − returnedQuantity` (order line, same transaction)                                                                                                                                  |
+| Supplier return   | source bucket `−= q`                                                           | Status `approved`; usable: `onHand − reserved ≥ q`; quarantine: `quarantine ≥ q`                                                                                                                 |
+| Reversal          | `onHand −= original change`                                                    | Original not already reversed (`reversedBy: null` in the update filter)                                                                                                                          |
 
 - Every row above runs inside `session.withTransaction()`. The stock level update, ledger insert, parent document update, document number and audit entry commit together or not at all. The driver retries the transaction on write conflicts.
 - The guards are conditional updates on the server, not read-then-write checks. When two requests race for the last units, exactly one succeeds. A concurrency test covers this.
@@ -758,7 +903,7 @@ Permissions are string constants in `packages/shared/permissions.ts`, together w
 | `categories:manage`        |   ✓   |       ✓       |                 |           |       |
 | `products:write`           |   ✓   |       ✓       |                 |           |       |
 | `stock:adjust`             |   ✓   |       ✓       |                 |           |       |
-| `stock:transfer`           |   ✓   |       ✓       |                 |           |   ✓   |
+| `stock:transfer`           |   ✓   |       ✓       |                 |           |   ✓   | \n  | `transfers:approve`     | ✓   | ✓   |     |     |     | \n  | `stock:count`           | ✓   | ✓   |     |     | ✓   |
 | `goodsReceipts:create`     |   ✓   |       ✓       |                 |           |   ✓   |
 | `shipments:create`         |   ✓   |       ✓       |                 |           |   ✓   |
 | `suppliers:write`          |   ✓   |               |        ✓        |           |       |
@@ -767,7 +912,7 @@ Permissions are string constants in `packages/shared/permissions.ts`, together w
 | `purchaseOrders:write`     |   ✓   |               |        ✓        |           |       |
 | `purchaseOrders:approve`   |   ✓   |               |        ✓        |           |       |
 | `customers:write`          |   ✓   |               |                 |     ✓     |       |
-| `salesOrders:write`        |   ✓   |               |                 |     ✓     |       |
+| `salesOrders:write`        |   ✓   |               |                 |     ✓     |       | \n  | `customerReturns:write` | ✓   |     |     | ✓   |     | \n  | `supplierReturns:write` | ✓   | ✓   | ✓   |     |     | \n  | `supplierReturns:approve` | ✓   |     | ✓   |     |     | \n  | `returns:process` | ✓   | ✓   |     |     | ✓   |
 | `reports:inventory`        |   ✓   |       ✓       |                 |           |       |
 | `reports:purchasing`       |   ✓   |               |        ✓        |           |       |
 | `reports:fulfilment`       |   ✓   |               |                 |     ✓     |       |
@@ -809,29 +954,32 @@ flowchart LR
 
 ### 6.3 Endpoints
 
-| Area              | Endpoints                                                                                                                                                                                                                                                                                              | Permission                          |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
-| Health            | `GET /health` (checks the DB ping)                                                                                                                                                                                                                                                                     | public                              |
-| Auth              | `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`, `POST /auth/change-password`                                                                                                                                                                                            | public / authenticated              |
-| Users             | `GET /users`, `POST /users`, `GET /users/:id`, `PATCH /users/:id` (name, role, isActive), `POST /users/:id/reset-password`                                                                                                                                                                             | `users:manage`                      |
-| Settings          | `GET /settings`, `PATCH /settings`                                                                                                                                                                                                                                                                     | read: any; write: `settings:manage` |
-| Audit             | `GET /audit-logs?entityType&entityId&actorId&from&to`                                                                                                                                                                                                                                                  | `audit:read`                        |
-| Warehouses        | `GET`, `POST /warehouses`, `GET`, `PATCH /warehouses/:id`                                                                                                                                                                                                                                              | write: `warehouses:manage`          |
-| Categories        | `GET`, `POST /categories`, `PATCH`, `DELETE /categories/:id` (only when unused)                                                                                                                                                                                                                        | write: `categories:manage`          |
-| Products          | `GET /products?search&categoryId&isActive&lowStock`, `POST`, `GET /products/:id` (with stock per warehouse), `PATCH /products/:id`                                                                                                                                                                     | write: `products:write`             |
-| Suppliers         | `GET`, `POST /suppliers`, `GET`, `PATCH /suppliers/:id`; `GET /suppliers/:id/prices`, `PUT`/`DELETE /suppliers/:id/prices/:productId`; `GET /suppliers/:id/delivery-summary`; `GET /products/:id/supplier-prices`                                                                                      | write: `suppliers:write`            |
-| Customers         | `GET`, `POST /customers`, `GET`, `PATCH /customers/:id` (detail includes open SOs)                                                                                                                                                                                                                     | write: `customers:write`            |
-| Stock             | `GET /stock/levels?search&warehouseId&categoryId&productId&status(low\|out\|available)&sort`, `PATCH /stock/levels/:id` (threshold override, `products:write`), `GET /stock/movements?productId&warehouseId&type&direction(in\|out)&from&to`                                                           | read: any                           |
-| Adjustments       | `GET /stock/adjustments?type&warehouseId`, `GET /stock/adjustments/:id`, `POST /stock/adjustments` (posts immediately), `POST /stock/opening`                                                                                                                                                          | write: `stock:adjust`               |
-| Transfers         | `GET`, `POST /stock-transfers`, `GET`, `PATCH`, `DELETE /stock-transfers/:id` (draft), `POST /stock-transfers/:id/dispatch`, `/receive`, `/cancel`                                                                                                                                                     | write: `stock:transfer`             |
-| Purchase orders   | `GET /purchase-orders?search&status&open&overdue&supplierId&warehouseId&productId&sort`, `POST`, `GET`, `PATCH`/`DELETE /purchase-orders/:id` (draft), `POST /purchase-orders/:id/submit`, `/cancel` (no receipts yet), `/close` (partially received)                                                  | `purchaseOrders:write`              |
-|                   | `POST /purchase-orders/:id/approve`, `/reject`                                                                                                                                                                                                                                                         | `purchaseOrders:approve`            |
-| Purchase requests | `GET /purchase-requests?search&status&warehouseId&mine`, `POST`, `GET`, `PATCH`/`DELETE /purchase-requests/:id` (draft, requester), `POST /:id/submit`, `/cancel`; `POST /:id/approve`, `/reject` (`purchaseRequests:approve`); `POST /:id/convert` (`purchaseOrders:write`)                           | write: `purchaseRequests:create`    |
-| Goods receipts    | `GET /goods-receipts?search&purchaseOrderId&supplierId&warehouseId&issues&from&to`, `POST /goods-receipts`, `GET /goods-receipts/:id`                                                                                                                                                                  | write: `goodsReceipts:create`       |
-| Sales orders      | `GET /sales-orders?search&status&open&toFulfil&customerId&warehouseId&productId&sort`, `POST`, `GET`, `PATCH`/`DELETE /sales-orders/:id` (draft), `POST /sales-orders/:id/confirm`, `/cancel` (whole order or unshipped remainder); `GET /sales-orders/fulfilment-summary`                             | write: `salesOrders:write`          |
-| Availability      | `GET /stock/availability?productIds=a,b` (on hand, reserved, available per warehouse)                                                                                                                                                                                                                  | any                                 |
-| Shipments         | `GET /shipments?search&status&pending&inTransit&salesOrderId&customerId&warehouseId&from&to`, `POST /shipments` (pick list), `GET /shipments/:id`, `POST /shipments/:id/pick`, `/pack`, `/dispatch`, `/tracking`, `/cancel`                                                                            | write: `shipments:create`           |
-| Reports           | `GET /reports/dashboard` (figures limited to the caller's permissions), `GET /reports/inventory-valuation?warehouseId` and `/stock-turnover?from&to` (`reports:inventory`), `/purchasing-summary?from&to&groupBy` (`reports:purchasing`), `/fulfilment-summary?from&to&groupBy` (`reports:fulfilment`) | dashboard: any                      |
+| Area              | Endpoints                                                                                                                                                                                                                                                                                                                       | Permission                          |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| Health            | `GET /health` (checks the DB ping)                                                                                                                                                                                                                                                                                              | public                              |
+| Auth              | `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`, `POST /auth/change-password`                                                                                                                                                                                                                     | public / authenticated              |
+| Users             | `GET /users`, `POST /users`, `GET /users/:id`, `PATCH /users/:id` (name, role, isActive), `POST /users/:id/reset-password`                                                                                                                                                                                                      | `users:manage`                      |
+| Settings          | `GET /settings`, `PATCH /settings`                                                                                                                                                                                                                                                                                              | read: any; write: `settings:manage` |
+| Audit             | `GET /audit-logs?entityType&entityId&actorId&from&to`                                                                                                                                                                                                                                                                           | `audit:read`                        |
+| Warehouses        | `GET`, `POST /warehouses`, `GET`, `PATCH /warehouses/:id`                                                                                                                                                                                                                                                                       | write: `warehouses:manage`          |
+| Categories        | `GET`, `POST /categories`, `PATCH`, `DELETE /categories/:id` (only when unused)                                                                                                                                                                                                                                                 | write: `categories:manage`          |
+| Products          | `GET /products?search&categoryId&isActive&lowStock`, `POST`, `GET /products/:id` (with stock per warehouse), `PATCH /products/:id`                                                                                                                                                                                              | write: `products:write`             |
+| Suppliers         | `GET`, `POST /suppliers`, `GET`, `PATCH /suppliers/:id`; `GET /suppliers/:id/prices`, `PUT`/`DELETE /suppliers/:id/prices/:productId`; `GET /suppliers/:id/delivery-summary`; `GET /products/:id/supplier-prices`                                                                                                               | write: `suppliers:write`            |
+| Customers         | `GET`, `POST /customers`, `GET`, `PATCH /customers/:id` (detail includes open SOs)                                                                                                                                                                                                                                              | write: `customers:write`            |
+| Stock             | `GET /stock/levels?search&warehouseId&categoryId&productId&status(low\\                                                                                                                                                                                                                                                         | out\\                               | available)&sort`, `PATCH /stock/levels/:id`(threshold override,`products:write`), `GET /stock/movements?productId&warehouseId&type&direction(in\\ | out)&bucket&from&to`, `GET /stock/quarantine`, `POST /stock/quarantine` (`stock:adjust`) | read: any |
+| Adjustments       | `GET /stock/adjustments?type&warehouseId`, `GET /stock/adjustments/:id`, `POST /stock/adjustments` (posts immediately), `POST /stock/adjustments/:id/reverse`, `POST /stock/opening`                                                                                                                                            | write: `stock:adjust`               |
+| Counts            | `GET`, `POST /stock-counts` (`stock:count`), `GET /stock-counts/:id`, `PUT /:id/counts`, `POST /:id/submit`, `/reopen`, `/cancel` (`stock:count`), `POST /:id/post` (`stock:adjust`)                                                                                                                                            | see left                            |
+| Returns           | `GET`, `POST /customer-returns`, `GET /:id`, `POST /:id/approve`, `/reject`, `/cancel` (`customerReturns:write`), `/receive`, `/inspect` (`returns:process`); `GET`, `POST /supplier-returns` (`supplierReturns:write`), `POST /:id/approve`, `/reject` (`supplierReturns:approve`), `/cancel`, `/dispatch` (`returns:process`) | see left                            |
+| Ops summary       | `GET /warehouse-ops/summary`                                                                                                                                                                                                                                                                                                    | any                                 |
+| Transfers         | `GET /stock-transfers?search&status&inTransit&warehouseId&productId`, `POST`, `GET`, `PATCH /stock-transfers/:id` (requested), `POST /:id/dispatch`, `/receive`, `/cancel` (`stock:transfer`); `POST /:id/approve`, `/reject`, `/close` (`transfers:approve`)                                                                   | see left                            |
+| Purchase orders   | `GET /purchase-orders?search&status&open&overdue&supplierId&warehouseId&productId&sort`, `POST`, `GET`, `PATCH`/`DELETE /purchase-orders/:id` (draft), `POST /purchase-orders/:id/submit`, `/cancel` (no receipts yet), `/close` (partially received)                                                                           | `purchaseOrders:write`              |
+|                   | `POST /purchase-orders/:id/approve`, `/reject`                                                                                                                                                                                                                                                                                  | `purchaseOrders:approve`            |
+| Purchase requests | `GET /purchase-requests?search&status&warehouseId&mine`, `POST`, `GET`, `PATCH`/`DELETE /purchase-requests/:id` (draft, requester), `POST /:id/submit`, `/cancel`; `POST /:id/approve`, `/reject` (`purchaseRequests:approve`); `POST /:id/convert` (`purchaseOrders:write`)                                                    | write: `purchaseRequests:create`    |
+| Goods receipts    | `GET /goods-receipts?search&purchaseOrderId&supplierId&warehouseId&issues&from&to`, `POST /goods-receipts`, `GET /goods-receipts/:id`                                                                                                                                                                                           | write: `goodsReceipts:create`       |
+| Sales orders      | `GET /sales-orders?search&status&open&toFulfil&customerId&warehouseId&productId&sort`, `POST`, `GET`, `PATCH`/`DELETE /sales-orders/:id` (draft), `POST /sales-orders/:id/confirm`, `/cancel` (whole order or unshipped remainder); `GET /sales-orders/fulfilment-summary`                                                      | write: `salesOrders:write`          |
+| Availability      | `GET /stock/availability?productIds=a,b` (on hand, reserved, available per warehouse)                                                                                                                                                                                                                                           | any                                 |
+| Shipments         | `GET /shipments?search&status&pending&inTransit&salesOrderId&customerId&warehouseId&from&to`, `POST /shipments` (pick list), `GET /shipments/:id`, `POST /shipments/:id/pick`, `/pack`, `/dispatch`, `/tracking`, `/cancel`                                                                                                     | write: `shipments:create`           |
+| Reports           | `GET /reports/dashboard` (figures limited to the caller's permissions), `GET /reports/inventory-valuation?warehouseId` and `/stock-turnover?from&to` (`reports:inventory`), `/purchasing-summary?from&to&groupBy` (`reports:purchasing`), `/fulfilment-summary?from&to&groupBy` (`reports:fulfilment`)                          | dashboard: any                      |
 
 Reports are MongoDB aggregations over the source documents. Nothing is pre-aggregated, which is fast enough at SMB data volumes given the indexes above.
 
@@ -857,14 +1005,14 @@ Reports are MongoDB aggregations over the source documents. Nothing is pre-aggre
 
 The sidebar is grouped. Items the user lacks permission for are hidden.
 
-| Group      | Pages                                                     |
-| ---------- | --------------------------------------------------------- |
-| —          | Dashboard                                                 |
-| Inventory  | Products, Stock levels, Movements, Adjustments, Transfers |
-| Purchasing | Purchase orders, Goods receipts, Suppliers                |
-| Sales      | Sales orders, Shipments, Customers                        |
-| —          | Reports                                                   |
-| Admin      | Users, Warehouses, Categories, Settings, Audit log        |
+| Group      | Pages                                                                               |
+| ---------- | ----------------------------------------------------------------------------------- |
+| —          | Dashboard                                                                           |
+| Inventory  | Products, Stock levels, Movements, Adjustments, Transfers, Stock counts, Quarantine | \n  | Returns | Customer returns, Supplier returns |
+| Purchasing | Purchase orders, Goods receipts, Suppliers                                          |
+| Sales      | Sales orders, Shipments, Customers                                                  |
+| —          | Reports                                                                             |
+| Admin      | Users, Warehouses, Categories, Settings, Audit log                                  |
 
 The top bar has a global warehouse filter that defaults to "All warehouses" and is applied to stock views. It also has the user menu: profile, change password and sign out.
 
@@ -878,7 +1026,10 @@ The top bar has a global warehouse filter that defaults to "All warehouses" and 
 | Stock levels           | Product × warehouse grid: on hand, reserved, available, incoming                                                                                                           |
 | Movements              | Ledger with filters; each row links to its source document                                                                                                                 |
 | Adjustments            | List, create form with line editor (shows current on-hand)                                                                                                                 |
-| Transfers              | List, form, detail with dispatch, receive and cancel actions                                                                                                               |
+| Transfers              | List (status, in transit), request form with source availability, detail with approve, dispatch (per-line quantities), partial receipts with damage, close short, history  |
+| Stock counts           | List, start dialog (warehouse, category), blind count sheet, review with variance reasons, posted variances linked to their adjustment                                     |
+| Quarantine             | Quarantined stock per warehouse with release, write-off and return-to-supplier actions; quarantine change dialog                                                           |
+| Returns                | Customer returns from a shipped order (approve, receive, inspect); supplier returns from quarantine or usable stock (approve, send)                                        |
 | Purchase orders        | List with status tabs, form with line editor and totals, detail with timeline, actions by status and permission, receipts tab                                              |
 | Goods receipt          | Started from a PO: remaining quantity per line, enter quantity received                                                                                                    |
 | Sales orders           | List (status, fulfilment, customer, warehouse filters), form with live availability per line and totals, detail with confirm, cancel, pick list actions and shipments      |
@@ -1011,6 +1162,10 @@ Vitest runs both apps and the shared package.
 | 21  | Stock leaves on-hand at dispatch, not at picking or packing                                             | Picked goods are still in the building; on-hand matches what a count would find until the van leaves | Picked units can't be told apart from shelf stock in the stock figures                      |
 | 22  | Short picks return units to the order, still reserved                                                   | The order keeps its claim on the stock; the shortfall is visible and can be re-picked or cancelled   | A real shelf shortage needs a stock adjustment to correct on-hand                           |
 | 23  | Cancelling after a partial shipment cancels only the remainder                                          | Shipped goods and their movements stay on record; one action releases what's left                    | No separate "closed" status: the order shows shipped or delivered with cancelled quantities |
+| 24  | Quarantine as a second balance on each stock level, with its own ledger bucket                          | Isolated goods stay visible and auditable without ever counting as available                         | Every stock query must use onHand, not onHand + quarantine                                  |
+| 25  | Count variances measured at posting, not at count start                                                 | Stock that moves during a count isn't double-adjusted                                                | Counts should be taken when the shelf is quiet; the snapshot is for reference               |
+| 26  | Reversals instead of edits or deletions                                                                 | The ledger keeps every movement; the correction is its own documented event                          | A reversal can fail if the stock it would remove has since moved on                         |
+| 27  | Customer returns land in quarantine until inspected                                                     | Nothing unchecked becomes sellable; inspection decides restock or isolation                          | An extra step even for returns in perfect condition                                         |
 
 Dependencies beyond the required stack are limited to: `react-hook-form` and `@hookform/resolvers` (shadcn forms), `@tanstack/react-table`, `pino` and `pino-http`, `helmet`, `cors`, `cookie-parser`, `express-rate-limit`, `jsonwebtoken`, `bcrypt`, and `mongodb-memory-server` (tests only).
 
@@ -1025,7 +1180,7 @@ Each phase ends with passing tests, an `IMPLEMENTATION_LOG.md` entry and a commi
 | **0. Architecture**                       | This document, implementation log, repository initialised                                                                                                                                                                                                                                                             | Reviewed and committed                                                                       |
 | **1. Foundation and auth** ✓              | Monorepo and tooling; `shared` package; Express app with config, logging, request IDs, error handling, `/health`; local and Docker MongoDB replica set; login, refresh rotation, logout, change password, bootstrap admin, RBAC, user management; web shell (layout, sidebar, route guards, role-aware dashboard); CI | Auth, RBAC and route-guard tests pass (unit, integration, E2E)                               |
 | **2. Master data and inventory engine** ✓ | Settings (company, currency); warehouses, categories, products (generated SKUs), suppliers, customers; stock levels, movement ledger, opening stock, adjustments (incl. stock counts), per-warehouse low-stock thresholds; list, detail and form pages with search, filters and pagination                            | SKU, stock calculation, consistency and concurrency tests pass; ledger always equals on-hand |
-| **3. Warehouse operations**               | Stock transfers (dispatch, receive), audit log                                                                                                                                                                                                                                                                        | Transfer invariant and concurrency tests pass                                                |
+| **3. Warehouse operations** ✓             | Transfer requests with approval, dispatch, in transit, partial receipts and close short; physical counts with reasons; quarantine; adjustment reversals; customer and supplier returns with inspection and restocking                                                                                                 | Transfer, count, quarantine, reversal, return and concurrency tests pass; ledger per bucket  |
 | **4. Procurement** ✓                      | Supplier price lists, purchase requests with approval and conversion, purchase orders with approval, cancellation and closing, GRNs with accepted/rejected/damaged quantities and partial deliveries, supplier delivery history                                                                                       | Complete, partial, damaged, rejected, cancelled and concurrent receipt tests pass            |
 | **5. Order fulfilment** ✓                 | Sales orders with pricing and discounts, availability checks, reservations, pick lists, short picks, packing, dispatch, delivery tracking, partial fulfilment, cancellation and release, order history                                                                                                                | Complete, partial, cancelled, insufficient-stock and concurrent reservation tests pass       |
 | **6. Dashboard and reports**              | Dashboard, inventory valuation, purchasing summary, fulfilment summary, stock turnover                                                                                                                                                                                                                                | Report figures verified against seeded documents in tests                                    |

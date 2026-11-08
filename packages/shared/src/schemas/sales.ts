@@ -153,6 +153,8 @@ export const listSalesOrdersQuerySchema = paginationQuerySchema.extend({
   open: z.enum(['true']).optional(),
   /** Open orders with quantities not yet on a shipment. */
   toFulfil: z.enum(['true']).optional(),
+  /** Orders with shipped units not already on a customer return. */
+  returnable: z.enum(['true']).optional(),
   customerId: objectIdSchema.optional(),
   warehouseId: objectIdSchema.optional(),
   productId: objectIdSchema.optional(),

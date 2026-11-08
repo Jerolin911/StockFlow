@@ -1,10 +1,13 @@
 import { Link } from 'react-router';
 import { PackagePlus, Plus } from 'lucide-react';
-import { ADJUSTMENT_REASON_LABELS } from '@stockflow/shared';
+import {
+  ADJUSTMENT_REASON_LABELS,
+  STOCK_DOCUMENT_TYPES,
+  STOCK_DOCUMENT_TYPE_LABELS,
+} from '@stockflow/shared';
 import { FilterSelect } from '@/components/filters';
 import { PageHeader } from '@/components/PageHeader';
 import { Pagination } from '@/components/Pagination';
-import { StatusBadge } from '@/components/StatusBadge';
 import { FilterBar, TableBodyState } from '@/components/table';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -21,6 +24,7 @@ import { useWarehouseOptions } from '@/features/catalog/api';
 import { formatDateTime } from '@/lib/format';
 import { compact, useUrlFilters } from '@/lib/use-url-filters';
 import { useAdjustments } from './api';
+import { StockDocumentBadge } from './StockDocumentBadge';
 
 export function AdjustmentsPage() {
   const canAdjust = usePermission('stock:adjust');
@@ -61,8 +65,10 @@ export function AdjustmentsPage() {
             onChange={(type) => filters.update({ type })}
             allLabel="All types"
             options={[
-              { value: 'opening', label: 'Opening stock' },
-              { value: 'adjustment', label: 'Adjustment' },
+              ...STOCK_DOCUMENT_TYPES.map((t) => ({
+                value: t,
+                label: STOCK_DOCUMENT_TYPE_LABELS[t],
+              })),
             ]}
           />
           <FilterSelect
@@ -108,11 +114,12 @@ export function AdjustmentsPage() {
                     </Link>
                   </TableCell>
                   <TableCell>
-                    {d.type === 'opening' ? (
-                      <StatusBadge tone="blue">Opening stock</StatusBadge>
-                    ) : (
-                      <StatusBadge tone="gray">Adjustment</StatusBadge>
-                    )}
+                    <StockDocumentBadge type={d.type} />
+                    {d.reversedBy ? (
+                      <div className="text-muted-foreground mt-1 text-xs">
+                        Reversed by {d.reversedBy.number}
+                      </div>
+                    ) : null}
                   </TableCell>
                   <TableCell className="font-mono text-xs">{d.warehouse.code}</TableCell>
                   <TableCell className="hidden md:table-cell">

@@ -51,7 +51,7 @@ test('staff cannot see or open user management', async ({ page }) => {
   await expect(nav.getByRole('link', { name: 'Users' })).toHaveCount(0);
 
   await expect(page.getByText('Pick, pack and dispatch shipments')).toBeVisible();
-  await expect(page.getByText('Post stock adjustments')).toHaveCount(0);
+  await expect(page.getByText('Post adjustments, counts and quarantine changes')).toHaveCount(0);
   await expect(page.getByText('Active accounts by role')).toHaveCount(0);
 
   await page.goto('/users');
@@ -61,7 +61,7 @@ test('staff cannot see or open user management', async ({ page }) => {
 test('role-specific dashboard for an inventory manager', async ({ page }) => {
   await signInFromStart(page, INVENTORY);
   await expect(page.getByText('Signed in as Marcus Chen · Inventory Manager')).toBeVisible();
-  await expect(page.getByText('Post stock adjustments')).toBeVisible();
+  await expect(page.getByText('Post adjustments, counts and quarantine changes')).toBeVisible();
   await expect(page.getByText('Approve purchase orders')).toHaveCount(0);
 });
 

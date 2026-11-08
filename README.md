@@ -53,7 +53,7 @@ Open http://localhost:5173. Seeded accounts, one per role:
 
 The demo password is `DEMO_PASSWORD` in [apps/api/scripts/seed-data.ts](apps/api/scripts/seed-data.ts), or `SEED_PASSWORD` if you set it.
 
-`npm run seed` drops the development database and creates three warehouses, five categories, 19 products, suppliers and customers. It then posts opening stock, an adjustment, purchase orders with receipts, and sales orders at every fulfilment stage (delivered, partly shipped, picking, packed, waiting, draft, cancelled) through the same services the API uses, so stock levels, reservations and the movement ledger agree. Seed data is for demonstration only and the script refuses to run with `NODE_ENV=production`.
+`npm run seed` drops the development database and creates three warehouses, five categories, 19 products, suppliers and customers. It then posts opening stock, an adjustment, purchase orders with receipts, sales orders at every fulfilment stage (delivered, partly shipped, picking, packed, waiting, draft, cancelled), transfers (received, in transit, awaiting approval), a customer return awaiting inspection, quarantined stock with an approved supplier return, and a count in progress, all through the same services the API uses, so stock levels, reservations and the movement ledger agree. Seed data is for demonstration only and the script refuses to run with `NODE_ENV=production`.
 
 ## Inventory rules
 
@@ -79,6 +79,15 @@ The demo password is `DEMO_PASSWORD` in [apps/api/scripts/seed-data.ts](apps/api
 - On-hand stock falls only at dispatch, together with the reservation, as a `SHIPMENT` movement at the current average cost. Picking and packing don't change stock.
 - After dispatch, tracking updates (in transit, out for delivery, failed attempt, delivered with the recipient's name) build the delivery timeline. The order is delivered when everything shipped has been delivered.
 - Cancelling an order releases all unshipped reservations and cancels open pick lists. After a partial shipment, only the remainder is cancelled.
+
+## Warehouse operations and returns
+
+- **Transfers:** requested, approved by someone other than the requester, then dispatched (stock leaves the source and is in transit, in neither warehouse). Receipts can be partial; damaged units go to the destination's quarantine. What never arrives is closed short: recorded at the destination and written off as a loss.
+- **Physical counts:** a count sheet covers every active product held in a warehouse, or one category; counting is blind by default. Variances are measured against on-hand when posting and each needs a reason (damaged, lost, found or miscount). Posting creates one adjustment. A count can't go below reserved stock.
+- **Quarantine:** a second balance per warehouse for damaged goods and returns awaiting inspection. It's never available to sell; units leave by release, write-off or a supplier return.
+- **Customer returns:** raised against shipped quantities, approved, received into quarantine, then inspected: restocked units become usable at the cost they shipped at; the rest stay isolated.
+- **Supplier returns:** from quarantine or usable stock, approved by procurement, then sent; stock leaves at dispatch.
+- **Corrections:** movements are never deleted. A posted adjustment is reversed by a new adjustment with the opposite quantities, linked both ways.
 
 ## Checks
 

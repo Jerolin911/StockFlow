@@ -19,11 +19,16 @@ import {
   createProductSupplierPricesRouter,
   createSupplierPurchasingRouter,
 } from './modules/purchasing/supplier-prices.js';
+import { createCustomerReturnsRouter } from './modules/returns/customer-returns.js';
+import { createSupplierReturnsRouter } from './modules/returns/supplier-returns.js';
 import { createSalesOrdersRouter } from './modules/sales/sales-orders.js';
 import { createShipmentsRouter } from './modules/sales/shipments.js';
 import { createSettingsRouter } from './modules/settings/settings.js';
 import { createStockRouter } from './modules/stock/stock.routes.js';
 import { createUsersRouter } from './modules/users/users.routes.js';
+import { createStockCountsRouter } from './modules/warehouse-ops/stock-counts.js';
+import { createWarehouseOpsRouter } from './modules/warehouse-ops/summary.js';
+import { createTransfersRouter } from './modules/warehouse-ops/transfers.js';
 import { createWarehousesRouter } from './modules/warehouses/warehouses.js';
 
 const REQUEST_ID_PATTERN = /^[\w-]{1,100}$/;
@@ -87,6 +92,11 @@ export function createApp(): Express {
   api.use('/goods-receipts', createGoodsReceiptsRouter());
   api.use('/sales-orders', createSalesOrdersRouter());
   api.use('/shipments', createShipmentsRouter());
+  api.use('/stock-transfers', createTransfersRouter());
+  api.use('/stock-counts', createStockCountsRouter());
+  api.use('/customer-returns', createCustomerReturnsRouter());
+  api.use('/supplier-returns', createSupplierReturnsRouter());
+  api.use('/warehouse-ops', createWarehouseOpsRouter());
 
   app.use('/api/v1', api);
   app.use(notFoundHandler);

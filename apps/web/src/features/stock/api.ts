@@ -1,5 +1,7 @@
 import type {
   OpeningStockInput,
+  QuarantineActionInput,
+  QuarantineLevelDto,
   StockAdjustmentDto,
   StockAdjustmentInput,
   StockLevelDto,
@@ -48,4 +50,27 @@ export const useUpdateThreshold = () =>
         body: { reorderPoint },
       }),
     ['stock-levels', 'products'],
+  );
+
+export const useReverseAdjustment = () =>
+  useApiMutation(
+    ({ id, reason }: { id: string; reason: string }) =>
+      apiRequest<{ data: StockAdjustmentDto }>(`/stock/adjustments/${id}/reverse`, {
+        method: 'POST',
+        body: { reason },
+      }),
+    STOCK_RESOURCES,
+  );
+
+export const useQuarantine = (params: Query) =>
+  useListQuery<QuarantineLevelDto>('quarantine', '/stock/quarantine', params);
+
+export const usePostQuarantineAction = () =>
+  useApiMutation(
+    (input: QuarantineActionInput) =>
+      apiRequest<{ data: StockAdjustmentDto }>('/stock/quarantine', {
+        method: 'POST',
+        body: input,
+      }),
+    ['quarantine', 'warehouse-ops', ...STOCK_RESOURCES],
   );
