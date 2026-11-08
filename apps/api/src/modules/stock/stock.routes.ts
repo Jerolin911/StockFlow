@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import {
+  availabilityQuerySchema,
   listAdjustmentsQuerySchema,
   listMovementsQuerySchema,
   listStockLevelsQuerySchema,
@@ -18,6 +19,7 @@ import {
   listAdjustments,
   listMovements,
   listStockLevels,
+  productAvailability,
 } from './stock.queries.js';
 
 export function createStockRouter(): Router {
@@ -35,6 +37,11 @@ export function createStockRouter(): Router {
     const updated = await StockLevel.findByIdAndUpdate(id, { $set: { reorderPoint } });
     if (!updated) throw notFound('Stock level');
     res.json({ data: await getStockLevel(id) });
+  });
+
+  router.get('/availability', async (req, res) => {
+    const { productIds } = availabilityQuerySchema.parse(req.query);
+    res.json({ data: await productAvailability(productIds) });
   });
 
   router.get('/movements', async (req, res) => {

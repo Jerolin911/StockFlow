@@ -162,7 +162,13 @@ export function PartnersPage({ kind }: { kind: PartnerKind }) {
                         {p.name}
                       </Link>
                     ) : (
-                      <div className="font-medium">{p.name}</div>
+                      <Link
+                        to={`/sales-orders?customerId=${p.id}`}
+                        className="font-medium hover:underline"
+                        title="Order history"
+                      >
+                        {p.name}
+                      </Link>
                     )}
                     {p.contactName ? (
                       <div className="text-muted-foreground text-xs">{p.contactName}</div>

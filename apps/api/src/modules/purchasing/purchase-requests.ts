@@ -27,7 +27,7 @@ import {
   snapshot,
   userRef,
   type Actor,
-} from './common.js';
+} from '../common/documents.js';
 import { PurchaseOrder, PurchaseRequest, type PurchaseRequestRecord } from './models.js';
 import { createPurchaseOrder } from './purchase-orders.js';
 

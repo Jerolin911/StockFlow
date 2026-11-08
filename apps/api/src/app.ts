@@ -19,6 +19,8 @@ import {
   createProductSupplierPricesRouter,
   createSupplierPurchasingRouter,
 } from './modules/purchasing/supplier-prices.js';
+import { createSalesOrdersRouter } from './modules/sales/sales-orders.js';
+import { createShipmentsRouter } from './modules/sales/shipments.js';
 import { createSettingsRouter } from './modules/settings/settings.js';
 import { createStockRouter } from './modules/stock/stock.routes.js';
 import { createUsersRouter } from './modules/users/users.routes.js';
@@ -83,6 +85,8 @@ export function createApp(): Express {
   api.use('/purchase-requests', createPurchaseRequestsRouter());
   api.use('/purchase-orders', createPurchaseOrdersRouter());
   api.use('/goods-receipts', createGoodsReceiptsRouter());
+  api.use('/sales-orders', createSalesOrdersRouter());
+  api.use('/shipments', createShipmentsRouter());
 
   app.use('/api/v1', api);
   app.use(notFoundHandler);

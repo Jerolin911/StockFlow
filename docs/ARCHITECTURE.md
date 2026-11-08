@@ -30,7 +30,7 @@ Contents
 | Catalogue        | Categories and products (SKU, unit, prices, tax rate, reorder point)                                   |
 | Inventory        | Stock levels, movement ledger, stock adjustments, inter-warehouse transfers, low-stock list, valuation |
 | Procurement      | Suppliers, purchase orders with approval, goods receipts (partial)                                     |
-| Order fulfilment | Customers, sales orders with stock reservation, shipments (partial)                                    |
+| Order fulfilment | Customers, sales orders with stock reservation, pick lists, packing, dispatch, delivery tracking       |
 | Reporting        | Dashboard, inventory valuation, purchasing and fulfilment summaries                                    |
 | Audit            | Log of who changed what and when                                                                       |
 
@@ -94,17 +94,25 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A[Draft SO] -->|confirm<br/>reserve stock| B[Confirmed]
-    B -->|shipment| C{All lines<br/>shipped?}
-    C -->|no| D[Partially fulfilled]
-    D -->|shipment| C
-    C -->|yes| E[Fulfilled]
-    A -->|cancel| X[Cancelled]
-    B -->|cancel<br/>release reservation| X
-    D -->|cancel remaining<br/>release reservation| X
+    A[Draft SO<br/>priced lines,<br/>availability shown] -->|confirm<br/>reserve every line| B[Confirmed]
+    B -->|pick list<br/>allocate units| P[Picking]
+    P -->|confirm picked<br/>short units back to SO| K[Picked]
+    K -->|packages, weight| G[Packed]
+    G -->|dispatch<br/>onHand and reserved −q<br/>SHIPMENT movements| D[Dispatched]
+    D -->|tracking updates| T[In transit]
+    T -->|delivered, received by| V[Delivered]
+    B -->|cancel<br/>release reservation| X[Cancelled]
 ```
 
-Confirming a sales order reserves stock. A shipment takes the shipped quantity off both `onHand` and `reserved`, and writes `SHIPMENT` movements with the cost at that moment. Cancelling a partly fulfilled order releases only the unshipped reservation. Its shipments stay on record.
+- **Pricing:** lines default to the product's selling price; each line can override the price and take a percentage discount. Tax is the product's rate, applied after the discount and rounded per line.
+- **Availability:** the order form and draft detail show on-hand, reserved and available per warehouse for each line. Confirmation reserves every line in the order's warehouse, all or nothing, and reports each short line. There are no backorders.
+- **Reservation:** confirming increments `reserved` with a conditional update (`onHand − reserved ≥ q`). Two orders confirmed at the same moment can't reserve the same units.
+- **Pick lists (shipments):** a shipment allocates part or all of an order's unallocated quantity. Several shipments per order give partial fulfilment. Picking records what was actually taken; units that couldn't be picked go back to the order, still reserved, with a reason.
+- **Physical stock changes only at dispatch.** Picking and packing move nothing in the ledger. Dispatch issues the picked units from the reservation: `onHand` and `reserved` fall together and `SHIPMENT` movements record the average cost at that moment.
+- **Delivery tracking:** after dispatch, staff record in-transit, out-for-delivery, failed-attempt and delivered updates with time, location and note. Delivered needs the recipient's name and is final.
+- **Order status** follows its lines: confirmed → partially shipped → shipped → delivered.
+- **Cancellation:** cancelling releases every unshipped unit's reservation and cancels open pick lists. With nothing shipped the order becomes cancelled. After a partial shipment only the remainder is cancelled, and the order's status then reflects what shipped. A shipment can be cancelled before dispatch; its units return to the order, still reserved.
+- **History:** orders and shipments record every action with who did it and when; an order's history includes each step of its shipments.
 
 ### 2.3 Inventory operations
 
@@ -150,13 +158,31 @@ stateDiagram-v2
     state "Sales order" as SO {
         [*] --> draft
         draft --> confirmed : confirm (reserve)
-        confirmed --> partially_fulfilled : shipment
-        partially_fulfilled --> partially_fulfilled : shipment
-        confirmed --> fulfilled : shipment (all)
-        partially_fulfilled --> fulfilled : shipment (rest)
+        confirmed --> partially_shipped : dispatch (some)
+        partially_shipped --> partially_shipped : dispatch
+        confirmed --> shipped : dispatch (all)
+        partially_shipped --> shipped : dispatch rest or cancel rest
+        shipped --> delivered : every shipment delivered
         draft --> cancelled : cancel
         confirmed --> cancelled : cancel (release)
-        partially_fulfilled --> cancelled : cancel (release rest)
+    }
+```
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    state "Shipment" as SHP {
+        [*] --> picking
+        picking --> picked : confirm picked
+        picked --> packed : pack
+        packed --> dispatched : dispatch (stock out)
+        dispatched --> in_transit : tracking update
+        in_transit --> in_transit : tracking update
+        dispatched --> delivered : delivered
+        in_transit --> delivered : delivered
+        picking --> cancelled : cancel
+        picked --> cancelled : cancel
+        packed --> cancelled : cancel
     }
 ```
 
@@ -309,13 +335,17 @@ erDiagram
     SO_LINE {
         ObjectId productId FK
         int quantity
+        int allocatedQuantity
         int shippedQuantity
+        int deliveredQuantity
+        int cancelledQuantity
         int unitPrice
     }
     SHIPMENT {
         string number UK
         ObjectId salesOrderId FK
-        date shippedAt
+        string status
+        date dispatchedAt
     }
 ```
 
@@ -549,37 +579,51 @@ goodsReceipts {
 
 ```ts
 salesOrders {
-  number: string
-  customerId: Ref<customers>; customerName: string
+  number: string                        // SO-2026-00001
+  status: 'draft' | 'confirmed' | 'partially_shipped' | 'shipped' | 'delivered' | 'cancelled'
+  customer: { _id, code, name }         // snapshot
   warehouseId: Ref<warehouses>          // fulfilling warehouse
-  status: 'draft' | 'confirmed' | 'partially_fulfilled' | 'fulfilled' | 'cancelled'
-  orderDate: Date; requiredDate?: Date; shippingAddress?: string
+  orderDate: Date; requiredDate?: Date
+  shippingAddress: string               // defaults to the customer's shipping address
+  customerReference: string; notes: string
   lines: [{
     _id; productId; sku; name; unit
     quantity: number
-    shippedQuantity: number             // ≤ quantity
-    unitPrice: money; discount: money   // discount is per line, absolute
-    taxRate: number
-    lineSubtotal; lineTax; lineTotal
+    allocatedQuantity: number           // on pick lists not yet dispatched
+    shippedQuantity: number             // dispatched
+    deliveredQuantity: number           // on delivered shipments
+    cancelledQuantity: number           // released without shipping
+    unitPrice: money; discountRate: number /* basis points */; taxRate: number
+    lineGross; lineDiscount; lineSubtotal; lineTax; lineTotal
   }]
-  subtotal; taxTotal; total
-  notes?; confirmedAt?; confirmedBy?; cancelledAt?; cancelledBy?; cancelReason?
-  createdBy
+  grossTotal; discountTotal; subtotal; taxTotal; total
+  createdBy; confirmedBy?; confirmedAt?; cancelReason
+  shipmentCount: number
+  history: [{ action, at, by: { _id, name }, note }]
 }
-// indexes: { number: 1 } unique, { status: 1, orderDate: -1 }, { customerId: 1, orderDate: -1 },
+// per line: quantity ≥ allocated + shipped + cancelled; reserved = quantity − shipped − cancelled
+// indexes: { number: 1 } unique, { status: 1, orderDate: -1 }, { 'customer._id': 1, orderDate: -1 },
 //          { warehouseId: 1, status: 1 }, { 'lines.productId': 1, status: 1 }
 
 shipments {
-  number: string
-  salesOrderId; salesOrderNumber; customerId; warehouseId
-  shippedAt: Date
-  carrier?: string; trackingNumber?: string
-  lines: [{ soLineId, productId, sku, name, quantity, unitCost: money /* avgCost at shipment → COGS */ }]
-  notes?: string
-  idempotencyKey?: string
+  number: string                        // SHP-2026-00001
+  status: 'picking' | 'picked' | 'packed' | 'dispatched' | 'in_transit' | 'delivered' | 'cancelled'
+  salesOrder: { _id, number }; customer: { _id, code, name }; warehouseId
+  shippingAddress: string
+  lines: [{ _id, soLineId, productId, sku, name, unit,
+            quantity,                   // requested on the pick list
+            pickedQuantity?,            // set at picking; what's packed and dispatched
+            unitCost? }]                // average cost at dispatch
+  notes; shortPickReason; packageCount?; weightGrams?
+  carrier; trackingNumber; receivedBy; cancelReason
+  pickedAt?/By?; packedAt?/By?; dispatchedAt?/By?; deliveredAt?
+  tracking: [{ type: 'dispatched' | 'in_transit' | 'out_for_delivery' | 'delivery_attempted' | 'delivered',
+               at, location, note, by }]
+  history: [{ action, at, by, note }]
   createdBy
 }
-// indexes: { number: 1 } unique, { salesOrderId: 1 }, { shippedAt: -1 }, { idempotencyKey: 1 } unique partial
+// indexes: { number: 1 } unique, { 'salesOrder._id': 1 }, { status: 1, createdAt: -1 },
+//          { warehouseId: 1, status: 1 }, { 'customer._id': 1, createdAt: -1 }, { dispatchedAt: -1 }
 ```
 
 ---
@@ -591,7 +635,7 @@ shipments {
 | Figure            | Definition                                                                                                                        | Stored or derived       |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
 | `onHand`          | Units physically in a warehouse                                                                                                   | Stored on `stockLevels` |
-| `reserved`        | Units committed to confirmed, unshipped sales order lines                                                                         | Stored on `stockLevels` |
+| `reserved`        | Σ `(quantity − shipped − cancelled)` over lines of open sales orders; picked and packed units stay reserved until dispatch        | Stored on `stockLevels` |
 | `available`       | `onHand − reserved`                                                                                                               | Derived                 |
 | `incoming`        | Σ `(quantity − receivedQuantity)` over lines of POs in `approved` or `partially_received` for that warehouse                      | Derived (aggregation)   |
 | `inTransit`       | Σ line quantities of transfers in `in_transit`, by destination                                                                    | Derived                 |
@@ -618,12 +662,14 @@ avgCost' = Q ≤ 0 ? c : round((Q × avgCost + q × c) / (Q + q))
 For each line:
 
 ```
-lineSubtotal = quantity × unitPrice − discount                 // purchases: quantity × unitCost
+lineGross    = quantity × unitPrice                            // purchases: quantity × unitCost
+lineDiscount = round(lineGross × discountRate / 10000)         // sales only
+lineSubtotal = lineGross − lineDiscount
 lineTax      = round(lineSubtotal × taxRate / 10000)
 lineTotal    = lineSubtotal + lineTax
 ```
 
-`subtotal`, `taxTotal` and `total` are sums of the line values. Tax is rounded per line. The frontend uses the same shared function for previews, but the server always recalculates and ignores totals sent by the client.
+Document totals (`grossTotal`, `discountTotal`, `subtotal`, `taxTotal`, `total`) are sums of the line values. Tax is rounded per line. The frontend uses the same shared function for previews, but the server always recalculates and ignores totals sent by the client.
 
 ### 4.4 Invariants
 
@@ -632,22 +678,23 @@ These must hold at all times. Integration tests assert them.
 1. `stockLevels.onHand ≥ 0` and `0 ≤ reserved ≤ onHand`.
 2. `onHand` for a (product, warehouse) equals Σ `stockMovements.quantity` for that pair (ledger reconciliation).
 3. PO line: `0 ≤ receivedQuantity ≤ quantity`.
-4. SO line: `0 ≤ shippedQuantity ≤ quantity`.
-5. Σ `reserved` per (product, warehouse) equals Σ `(quantity − shippedQuantity)` over lines of `confirmed` and `partially_fulfilled` SOs for that warehouse.
+4. SO line: `allocated + shipped + cancelled ≤ quantity` and `delivered ≤ shipped`. `allocated` equals the picked (or requested) units on the line's undispatched shipments; `shipped` equals the picked units on its dispatched shipments.
+5. Σ `reserved` per (product, warehouse) equals Σ `(quantity − shipped − cancelled)` over lines of confirmed sales orders for that warehouse, and Σ `SHIPMENT` movements equals −Σ units dispatched.
 6. Every posted receipt, shipment, adjustment and transfer has matching movement records whose quantities sum to the document's lines.
 7. Posted stock documents (receipts, shipments, adjustments, dispatched transfers) are never edited or deleted. Mistakes are corrected with a new adjustment.
 
 ### 4.5 How consistency is enforced
 
-| Operation         | Stock effect                       | Guard                                                                                                                                                                                            |
-| ----------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| SO confirm        | `reserved += q`                    | `updateOne({productId, warehouseId, $expr: {$gte: [{$subtract: ['$onHand','$reserved']}, q]}}, {$inc: {reserved: q}})`. If no document matches, the transaction aborts with `INSUFFICIENT_STOCK` |
-| SO cancel         | `reserved −= (quantity − shipped)` | Status condition on the SO                                                                                                                                                                       |
-| Shipment          | `onHand −= q`, `reserved −= q`     | `q ≤ quantity − shippedQuantity` (conditional update on the SO line), `reserved ≥ q`                                                                                                             |
-| Goods receipt     | `onHand += q` (upsert)             | `q ≤ quantity − receivedQuantity` (conditional update on the PO line)                                                                                                                            |
-| Adjustment        | `onHand += delta`                  | For negative deltas: `onHand + delta ≥ reserved`                                                                                                                                                 |
-| Transfer dispatch | source `onHand −= q`               | `onHand − reserved ≥ q`                                                                                                                                                                          |
-| Transfer receive  | destination `onHand += q` (upsert) | Status `in_transit`                                                                                                                                                                              |
+| Operation         | Stock effect                                   | Guard                                                                                                                                                                                            |
+| ----------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| SO confirm        | `reserved += q`                                | `updateOne({productId, warehouseId, $expr: {$gte: [{$subtract: ['$onHand','$reserved']}, q]}}, {$inc: {reserved: q}})`. If no document matches, the transaction aborts with `INSUFFICIENT_STOCK` |
+| SO cancel         | `reserved −= (quantity − shipped − cancelled)` | Status condition on the SO; open pick lists are cancelled in the same transaction                                                                                                                |
+| Pick list         | none (allocates on the SO line)                | `q ≤ quantity − allocated − shipped − cancelled`, checked in the transaction that updates the SO                                                                                                 |
+| Dispatch          | `onHand −= q`, `reserved −= q`                 | Shipment status `packed`; `updateOne({…, onHand: {$gte: q}, reserved: {$gte: q}}, {$inc: {onHand: −q, reserved: −q}})`                                                                           |
+| Goods receipt     | `onHand += q` (upsert)                         | `q ≤ quantity − receivedQuantity` (conditional update on the PO line)                                                                                                                            |
+| Adjustment        | `onHand += delta`                              | For negative deltas: `onHand + delta ≥ reserved`                                                                                                                                                 |
+| Transfer dispatch | source `onHand −= q`                           | `onHand − reserved ≥ q`                                                                                                                                                                          |
+| Transfer receive  | destination `onHand += q` (upsert)             | Status `in_transit`                                                                                                                                                                              |
 
 - Every row above runs inside `session.withTransaction()`. The stock level update, ledger insert, parent document update, document number and audit entry commit together or not at all. The driver retries the transaction on write conflicts.
 - The guards are conditional updates on the server, not read-then-write checks. When two requests race for the last units, exactly one succeeds. A concurrency test covers this.
@@ -781,8 +828,9 @@ flowchart LR
 |                   | `POST /purchase-orders/:id/approve`, `/reject`                                                                                                                                                                                                                                                         | `purchaseOrders:approve`            |
 | Purchase requests | `GET /purchase-requests?search&status&warehouseId&mine`, `POST`, `GET`, `PATCH`/`DELETE /purchase-requests/:id` (draft, requester), `POST /:id/submit`, `/cancel`; `POST /:id/approve`, `/reject` (`purchaseRequests:approve`); `POST /:id/convert` (`purchaseOrders:write`)                           | write: `purchaseRequests:create`    |
 | Goods receipts    | `GET /goods-receipts?search&purchaseOrderId&supplierId&warehouseId&issues&from&to`, `POST /goods-receipts`, `GET /goods-receipts/:id`                                                                                                                                                                  | write: `goodsReceipts:create`       |
-| Sales orders      | `GET`, `POST /sales-orders`, `GET`, `PATCH`, `DELETE /sales-orders/:id` (draft), `POST /sales-orders/:id/confirm`, `/cancel`                                                                                                                                                                           | `salesOrders:write`                 |
-| Shipments         | `GET /shipments?salesOrderId`, `POST /shipments`, `GET /shipments/:id`                                                                                                                                                                                                                                 | write: `shipments:create`           |
+| Sales orders      | `GET /sales-orders?search&status&open&toFulfil&customerId&warehouseId&productId&sort`, `POST`, `GET`, `PATCH`/`DELETE /sales-orders/:id` (draft), `POST /sales-orders/:id/confirm`, `/cancel` (whole order or unshipped remainder); `GET /sales-orders/fulfilment-summary`                             | write: `salesOrders:write`          |
+| Availability      | `GET /stock/availability?productIds=a,b` (on hand, reserved, available per warehouse)                                                                                                                                                                                                                  | any                                 |
+| Shipments         | `GET /shipments?search&status&pending&inTransit&salesOrderId&customerId&warehouseId&from&to`, `POST /shipments` (pick list), `GET /shipments/:id`, `POST /shipments/:id/pick`, `/pack`, `/dispatch`, `/tracking`, `/cancel`                                                                            | write: `shipments:create`           |
 | Reports           | `GET /reports/dashboard` (figures limited to the caller's permissions), `GET /reports/inventory-valuation?warehouseId` and `/stock-turnover?from&to` (`reports:inventory`), `/purchasing-summary?from&to&groupBy` (`reports:purchasing`), `/fulfilment-summary?from&to&groupBy` (`reports:fulfilment`) | dashboard: any                      |
 
 Reports are MongoDB aggregations over the source documents. Nothing is pre-aggregated, which is fast enough at SMB data volumes given the indexes above.
@@ -814,7 +862,7 @@ The sidebar is grouped. Items the user lacks permission for are hidden.
 | —          | Dashboard                                                 |
 | Inventory  | Products, Stock levels, Movements, Adjustments, Transfers |
 | Purchasing | Purchase orders, Goods receipts, Suppliers                |
-| Fulfilment | Sales orders, Shipments, Customers                        |
+| Sales      | Sales orders, Shipments, Customers                        |
 | —          | Reports                                                   |
 | Admin      | Users, Warehouses, Categories, Settings, Audit log        |
 
@@ -833,8 +881,8 @@ The top bar has a global warehouse filter that defaults to "All warehouses" and 
 | Transfers              | List, form, detail with dispatch, receive and cancel actions                                                                                                               |
 | Purchase orders        | List with status tabs, form with line editor and totals, detail with timeline, actions by status and permission, receipts tab                                              |
 | Goods receipt          | Started from a PO: remaining quantity per line, enter quantity received                                                                                                    |
-| Sales orders           | List with status tabs, form (available stock shown per line for the chosen warehouse), detail with confirm, ship and cancel actions, shipments tab                         |
-| Shipment               | Started from an SO: remaining quantity per line, carrier and tracking number                                                                                               |
+| Sales orders           | List (status, fulfilment, customer, warehouse filters), form with live availability per line and totals, detail with confirm, cancel, pick list actions and shipments      |
+| Shipments              | Queue (in the warehouse, on the way), pick list form from an SO, detail with pick, pack, dispatch, tracking updates, progress and history                                  |
 | Suppliers / Customers  | List, detail (open and recent orders), form                                                                                                                                |
 | Reports                | Inventory valuation, purchasing summary, fulfilment summary, stock turnover                                                                                                |
 | Admin pages            | Users (create, role, deactivate, reset password), warehouses, categories, settings, audit log                                                                              |
@@ -869,7 +917,8 @@ stockflow/
 │   │   │   │   ├── customers/
 │   │   │   │   ├── stock/         stock-level.model.ts, stock-movement.model.ts, stock.service.ts, adjustments/, transfers/
 │   │   │   │   ├── purchasing/    purchase-orders/, goods-receipts/
-│   │   │   │   ├── fulfilment/    sales-orders/, shipments/
+│   │   │   │   ├── sales/         sales orders, shipments (pick, pack, dispatch, tracking)
+│   │   │   │   ├── common/        document helpers and shared sub-schemas
 │   │   │   │   └── reports/
 │   │   │   ├── routes.ts          mounts module routers under /api/v1
 │   │   │   ├── app.ts             express app factory (used by tests)
@@ -937,28 +986,31 @@ Vitest runs both apps and the shared package.
 
 ## 10. Key technical decisions
 
-| #   | Decision                                                                                                | Reason                                                                                             | Trade-off                                                                       |
-| --- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| 1   | No invoicing, payments or financial status tracking                                                     | Keeps the product focused on inventory, procurement, warehouse operations and fulfilment           | Order prices and totals are informational; billing happens in another system    |
-| 2   | MongoDB replica set and multi-document transactions for every stock posting                             | Stock levels, ledger, order lines and numbering must change together                               | A replica set is needed even in development (single node in Docker and tests)   |
-| 3   | Conditional atomic updates as stock guards, inside the transaction                                      | Prevents overselling under concurrent requests without application-level locks                     | Guards must be written carefully per operation and covered by concurrency tests |
-| 4   | Separate `stockLevels` (current state) and an append-only `stockMovements` (ledger)                     | Fast reads of current stock plus a full audit trail that can be reconciled                         | Two writes per change, both in one transaction                                  |
-| 5   | Integer minor units for money, basis points for tax, integer quantities                                 | Exact arithmetic without decimal libraries                                                         | Fractional quantities must use a smaller base unit                              |
-| 6   | Moving weighted average cost per product                                                                | Standard for SMBs; simple and stable valuation and cost of goods shipped                           | Not FIFO; cost is shared across warehouses                                      |
-| 7   | Embedded line items with snapshots                                                                      | Atomic document updates; historical accuracy                                                       | Product renames don't change old documents (intended)                           |
-| 8   | Reservation at SO confirmation, no backorders                                                           | Keeps `available` meaningful; simpler fulfilment                                                   | Orders larger than available stock must wait for stock or be split              |
-| 9   | Two-step transfers (dispatch, receive)                                                                  | Matches physical reality; in-transit stock is visible                                              | One extra action compared with an instant transfer                              |
-| 10  | Fixed roles with a permission map in a shared package                                                   | Covers the business needs; one source of truth for API and UI                                      | Custom roles would need a schema change later                                   |
-| 11  | Short-lived JWT in memory and a rotating refresh token in an httpOnly cookie, user reloaded per request | XSS cannot read the refresh token; deactivation and role changes apply immediately                 | One user lookup per request                                                     |
-| 12  | Shared Zod schemas between web and api                                                                  | One validation definition; typed forms and requests                                                | The shared package must stay free of Node-only and browser-only code            |
-| 13  | Offset pagination                                                                                       | Page numbers suit back-office tables; data volumes are modest                                      | Slower on very deep pages (not expected here)                                   |
-| 14  | Reports computed by aggregation, not stored                                                             | No duplicated state to keep in sync                                                                | Heavier queries; mitigated by indexes                                           |
-| 15  | Vitest everywhere, Playwright for E2E                                                                   | One unit and integration runner, native TypeScript and ESM                                         | —                                                                               |
-| 16  | Feature-module layout on both api and web                                                               | Each domain is self-contained; phases add folders without reshaping existing code                  | Some repeated boilerplate per module                                            |
-| 17  | Generated SKUs `<category code>-00001` from a per-category counter; SKUs immutable                      | Readable, unique codes without manual effort; documents and history keep referring to the same SKU | Renaming a category code affects only new SKUs                                  |
-| 18  | Opening stock only before any other movement in that warehouse                                          | Keeps "opening" meaningful and auditable; later corrections are adjustments with a reason          | A late first registration must use an adjustment if anything moved already      |
-| 19  | Update schemas built from field definitions without defaults                                            | Zod applies defaults inside `.partial()`, which would silently overwrite stored values on PATCH    | Create schemas repeat the defaults explicitly                                   |
-| 20  | Outstanding = ordered − accepted; rejected and damaged units are recorded but not stocked               | Only accepted goods are usable; the supplier still owes what failed inspection                     | No quarantine stock; closing the PO is how a shortfall is written off           |
+| #   | Decision                                                                                                | Reason                                                                                               | Trade-off                                                                                   |
+| --- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 1   | No invoicing, payments or financial status tracking                                                     | Keeps the product focused on inventory, procurement, warehouse operations and fulfilment             | Order prices and totals are informational; billing happens in another system                |
+| 2   | MongoDB replica set and multi-document transactions for every stock posting                             | Stock levels, ledger, order lines and numbering must change together                                 | A replica set is needed even in development (single node in Docker and tests)               |
+| 3   | Conditional atomic updates as stock guards, inside the transaction                                      | Prevents overselling under concurrent requests without application-level locks                       | Guards must be written carefully per operation and covered by concurrency tests             |
+| 4   | Separate `stockLevels` (current state) and an append-only `stockMovements` (ledger)                     | Fast reads of current stock plus a full audit trail that can be reconciled                           | Two writes per change, both in one transaction                                              |
+| 5   | Integer minor units for money, basis points for tax, integer quantities                                 | Exact arithmetic without decimal libraries                                                           | Fractional quantities must use a smaller base unit                                          |
+| 6   | Moving weighted average cost per product                                                                | Standard for SMBs; simple and stable valuation and cost of goods shipped                             | Not FIFO; cost is shared across warehouses                                                  |
+| 7   | Embedded line items with snapshots                                                                      | Atomic document updates; historical accuracy                                                         | Product renames don't change old documents (intended)                                       |
+| 8   | Reservation at SO confirmation, no backorders                                                           | Keeps `available` meaningful; simpler fulfilment                                                     | Orders larger than available stock must wait for stock or be split                          |
+| 9   | Two-step transfers (dispatch, receive)                                                                  | Matches physical reality; in-transit stock is visible                                                | One extra action compared with an instant transfer                                          |
+| 10  | Fixed roles with a permission map in a shared package                                                   | Covers the business needs; one source of truth for API and UI                                        | Custom roles would need a schema change later                                               |
+| 11  | Short-lived JWT in memory and a rotating refresh token in an httpOnly cookie, user reloaded per request | XSS cannot read the refresh token; deactivation and role changes apply immediately                   | One user lookup per request                                                                 |
+| 12  | Shared Zod schemas between web and api                                                                  | One validation definition; typed forms and requests                                                  | The shared package must stay free of Node-only and browser-only code                        |
+| 13  | Offset pagination                                                                                       | Page numbers suit back-office tables; data volumes are modest                                        | Slower on very deep pages (not expected here)                                               |
+| 14  | Reports computed by aggregation, not stored                                                             | No duplicated state to keep in sync                                                                  | Heavier queries; mitigated by indexes                                                       |
+| 15  | Vitest everywhere, Playwright for E2E                                                                   | One unit and integration runner, native TypeScript and ESM                                           | —                                                                                           |
+| 16  | Feature-module layout on both api and web                                                               | Each domain is self-contained; phases add folders without reshaping existing code                    | Some repeated boilerplate per module                                                        |
+| 17  | Generated SKUs `<category code>-00001` from a per-category counter; SKUs immutable                      | Readable, unique codes without manual effort; documents and history keep referring to the same SKU   | Renaming a category code affects only new SKUs                                              |
+| 18  | Opening stock only before any other movement in that warehouse                                          | Keeps "opening" meaningful and auditable; later corrections are adjustments with a reason            | A late first registration must use an adjustment if anything moved already                  |
+| 19  | Update schemas built from field definitions without defaults                                            | Zod applies defaults inside `.partial()`, which would silently overwrite stored values on PATCH      | Create schemas repeat the defaults explicitly                                               |
+| 20  | Outstanding = ordered − accepted; rejected and damaged units are recorded but not stocked               | Only accepted goods are usable; the supplier still owes what failed inspection                       | No quarantine stock; closing the PO is how a shortfall is written off                       |
+| 21  | Stock leaves on-hand at dispatch, not at picking or packing                                             | Picked goods are still in the building; on-hand matches what a count would find until the van leaves | Picked units can't be told apart from shelf stock in the stock figures                      |
+| 22  | Short picks return units to the order, still reserved                                                   | The order keeps its claim on the stock; the shortfall is visible and can be re-picked or cancelled   | A real shelf shortage needs a stock adjustment to correct on-hand                           |
+| 23  | Cancelling after a partial shipment cancels only the remainder                                          | Shipped goods and their movements stay on record; one action releases what's left                    | No separate "closed" status: the order shows shipped or delivered with cancelled quantities |
 
 Dependencies beyond the required stack are limited to: `react-hook-form` and `@hookform/resolvers` (shadcn forms), `@tanstack/react-table`, `pino` and `pino-http`, `helmet`, `cors`, `cookie-parser`, `express-rate-limit`, `jsonwebtoken`, `bcrypt`, and `mongodb-memory-server` (tests only).
 
@@ -975,6 +1027,6 @@ Each phase ends with passing tests, an `IMPLEMENTATION_LOG.md` entry and a commi
 | **2. Master data and inventory engine** ✓ | Settings (company, currency); warehouses, categories, products (generated SKUs), suppliers, customers; stock levels, movement ledger, opening stock, adjustments (incl. stock counts), per-warehouse low-stock thresholds; list, detail and form pages with search, filters and pagination                            | SKU, stock calculation, consistency and concurrency tests pass; ledger always equals on-hand |
 | **3. Warehouse operations**               | Stock transfers (dispatch, receive), audit log                                                                                                                                                                                                                                                                        | Transfer invariant and concurrency tests pass                                                |
 | **4. Procurement** ✓                      | Supplier price lists, purchase requests with approval and conversion, purchase orders with approval, cancellation and closing, GRNs with accepted/rejected/damaged quantities and partial deliveries, supplier delivery history                                                                                       | Complete, partial, damaged, rejected, cancelled and concurrent receipt tests pass            |
-| **5. Order fulfilment**                   | Sales orders, reservations, shipments, cancellation and release, cost of goods shipped                                                                                                                                                                                                                                | Reservation race test passes; invariants hold                                                |
+| **5. Order fulfilment** ✓                 | Sales orders with pricing and discounts, availability checks, reservations, pick lists, short picks, packing, dispatch, delivery tracking, partial fulfilment, cancellation and release, order history                                                                                                                | Complete, partial, cancelled, insufficient-stock and concurrent reservation tests pass       |
 | **6. Dashboard and reports**              | Dashboard, inventory valuation, purchasing summary, fulfilment summary, stock turnover                                                                                                                                                                                                                                | Report figures verified against seeded documents in tests                                    |
 | **7. Hardening and delivery**             | Seed data, Playwright E2E suite, full Docker stack, CI with E2E, accessibility and responsive pass, comprehensive README                                                                                                                                                                                              | E2E suite green in CI; fresh clone runs with documented commands                             |

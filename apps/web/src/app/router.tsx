@@ -19,6 +19,12 @@ import { PurchaseRequestDetailPage } from '@/features/purchasing/PurchaseRequest
 import { PurchaseRequestFormPage } from '@/features/purchasing/PurchaseRequestFormPage';
 import { PurchaseRequestsPage } from '@/features/purchasing/PurchaseRequestsPage';
 import { SupplierDetailPage } from '@/features/purchasing/SupplierDetailPage';
+import { SalesOrderDetailPage } from '@/features/sales/SalesOrderDetailPage';
+import { SalesOrderFormPage } from '@/features/sales/SalesOrderFormPage';
+import { SalesOrdersPage } from '@/features/sales/SalesOrdersPage';
+import { ShipmentDetailPage } from '@/features/sales/ShipmentDetailPage';
+import { ShipmentFormPage } from '@/features/sales/ShipmentFormPage';
+import { ShipmentsPage } from '@/features/sales/ShipmentsPage';
 import { SettingsPage } from '@/features/settings/SettingsPage';
 import { AdjustmentDetailPage } from '@/features/stock/AdjustmentDetailPage';
 import { AdjustmentsPage } from '@/features/stock/AdjustmentsPage';
@@ -80,6 +86,21 @@ export const router = createBrowserRouter([
           },
           { path: '/goods-receipts/:id', element: <GoodsReceiptDetailPage /> },
           { path: '/customers', element: <PartnersPage key="customers" kind="customers" /> },
+          { path: '/sales-orders', element: <SalesOrdersPage /> },
+          {
+            element: <RequirePermission permission="salesOrders:write" />,
+            children: [
+              { path: '/sales-orders/new', element: <SalesOrderFormPage /> },
+              { path: '/sales-orders/:id/edit', element: <SalesOrderFormPage /> },
+            ],
+          },
+          { path: '/sales-orders/:id', element: <SalesOrderDetailPage /> },
+          { path: '/shipments', element: <ShipmentsPage /> },
+          {
+            element: <RequirePermission permission="shipments:create" />,
+            children: [{ path: '/shipments/new', element: <ShipmentFormPage /> }],
+          },
+          { path: '/shipments/:id', element: <ShipmentDetailPage /> },
           {
             element: <RequirePermission permission="users:manage" />,
             children: [{ path: '/users', element: <UsersPage /> }],

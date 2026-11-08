@@ -1,5 +1,6 @@
 import { Types, type FilterQuery, type PipelineStage } from 'mongoose';
 import type {
+  ProductAvailabilityDto,
   ListAdjustmentsQuery,
   ListMovementsQuery,
   ListStockLevelsQuery,
@@ -13,6 +14,7 @@ import { pageResult, paginateStages } from '../../lib/pagination.js';
 import { StockAdjustment } from './stock-adjustment.model.js';
 import { StockLevel } from './stock-level.model.js';
 import { StockMovement } from './stock-movement.model.js';
+import { Warehouse } from '../warehouses/warehouse.model.js';
 
 const oid = (id: string) => new Types.ObjectId(id);
 
@@ -308,4 +310,31 @@ export async function getAdjustment(id: string): Promise<StockAdjustmentDto> {
     .lean<PopulatedAdjustment>();
   if (!row) throw notFound('Stock adjustment');
   return toAdjustmentDto(row);
+}
+
+/** On-hand, reserved and available per warehouse for each product, zeros included. */
+export async function productAvailability(productIds: string[]): Promise<ProductAvailabilityDto[]> {
+  const [warehouses, levels] = await Promise.all([
+    Warehouse.find({}, { code: 1, name: 1, isActive: 1 }).sort({ code: 1 }).lean(),
+    StockLevel.find({ productId: { $in: productIds.map(oid) } }).lean(),
+  ]);
+  const byKey = new Map(
+    levels.map((l) => [`${l.productId.toString()}:${l.warehouseId.toString()}`, l]),
+  );
+  return productIds.map((productId) => ({
+    productId,
+    warehouses: warehouses
+      .map((w) => {
+        const level = byKey.get(`${productId}:${w._id.toString()}`);
+        const onHand = level?.onHand ?? 0;
+        const reserved = level?.reserved ?? 0;
+        return {
+          warehouse: { id: w._id.toString(), code: w.code, name: w.name, isActive: w.isActive },
+          onHand,
+          reserved,
+          available: onHand - reserved,
+        };
+      })
+      .filter((w) => w.warehouse.isActive || w.onHand > 0),
+  }));
 }

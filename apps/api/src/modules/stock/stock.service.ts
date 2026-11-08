@@ -13,6 +13,8 @@ export interface MovementInput {
   unitCost: number;
   reference: { type: MovementReferenceType; id: Types.ObjectId; number: string };
   createdBy: Types.ObjectId;
+  /** For withdrawals of stock already reserved: on-hand and reserved fall together. */
+  fromReserved?: boolean;
 }
 
 export class InsufficientStockError extends Error {
@@ -42,6 +44,16 @@ export async function applyMovement(input: MovementInput, session: ClientSession
       { $inc: { onHand: input.quantity } },
       { upsert: true, new: true, setDefaultsOnInsert: true, session },
     ).lean();
+  } else if (input.fromReserved) {
+    const removing = -input.quantity;
+    level = await StockLevel.findOneAndUpdate(
+      { ...key, onHand: { $gte: removing }, reserved: { $gte: removing } },
+      { $inc: { onHand: input.quantity, reserved: input.quantity } },
+      { new: true, session },
+    ).lean();
+    // Reservations are taken in the same transaction as the documents that hold them,
+    // so a missing reservation means the books are inconsistent, not a user error.
+    if (!level) throw new Error('Reserved stock is missing for this withdrawal');
   } else {
     const removing = -input.quantity;
     // The filter only matches when enough unreserved stock exists, so concurrent
@@ -103,4 +115,46 @@ export async function updateAverageCost(
           (onHand * product.avgCost + incomingQuantity * unitCost) / (onHand + incomingQuantity),
         );
   await Product.updateOne({ _id: productId }, { $set: { avgCost } }, { session });
+}
+
+/**
+ * Reserves stock for a confirmed order. The filter only matches when enough unreserved
+ * stock exists, so concurrent confirmations can never reserve the same units: the
+ * second one either sees the first's reservation or conflicts and is retried.
+ */
+export async function reserveStock(
+  productId: Types.ObjectId,
+  warehouseId: Types.ObjectId,
+  quantity: number,
+  session: ClientSession,
+): Promise<void> {
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    throw new Error('Reservation quantity must be a positive integer');
+  }
+  const key = { productId, warehouseId };
+  const result = await StockLevel.updateOne(
+    { ...key, $expr: { $gte: [{ $subtract: ['$onHand', '$reserved'] }, quantity] } },
+    { $inc: { reserved: quantity } },
+    { session },
+  );
+  if (result.modifiedCount === 0) {
+    const current = await StockLevel.findOne(key).session(session).lean();
+    throw new InsufficientStockError(productId, current ? current.onHand - current.reserved : 0);
+  }
+}
+
+/** Returns reserved units to available stock when an order or its remainder is cancelled. */
+export async function releaseReservation(
+  productId: Types.ObjectId,
+  warehouseId: Types.ObjectId,
+  quantity: number,
+  session: ClientSession,
+): Promise<void> {
+  if (quantity === 0) return;
+  const result = await StockLevel.updateOne(
+    { productId, warehouseId, reserved: { $gte: quantity } },
+    { $inc: { reserved: -quantity } },
+    { session },
+  );
+  if (result.modifiedCount === 0) throw new Error('Reservation to release is missing');
 }

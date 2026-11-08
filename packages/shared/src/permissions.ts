@@ -60,7 +60,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   'stock:adjust': 'Post stock adjustments',
   'stock:transfer': 'Transfer stock between warehouses',
   'goodsReceipts:create': 'Receive goods against purchase orders',
-  'shipments:create': 'Ship sales orders',
+  'shipments:create': 'Pick, pack and dispatch shipments',
   'suppliers:write': 'Create and edit suppliers and their prices',
   'purchaseRequests:create': 'Raise purchase requests',
   'purchaseRequests:approve': 'Approve purchase requests',

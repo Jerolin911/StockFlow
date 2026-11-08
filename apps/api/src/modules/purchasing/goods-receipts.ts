@@ -26,7 +26,7 @@ import {
   userRef,
   validation,
   type Actor,
-} from './common.js';
+} from '../common/documents.js';
 import { GoodsReceipt, PurchaseOrder, type GoodsReceiptRecord } from './models.js';
 
 type ReceiptInput = z.output<typeof goodsReceiptSchema>;

@@ -310,3 +310,90 @@ Delivered under roadmap phase 4 (Procurement). Phase 3 (warehouse operations: tr
 - Docker images and CI are still unverified (no running Docker engine, no Git remote).
 - The web bundle is now 890 kB minified (265 kB gzipped). Route-level code splitting would help.
 - Opening a link after signing in as a different user can land on "Access denied", because the app returns to the previous session's page. Harmless, but sending users to the dashboard when the page isn't permitted would be friendlier.
+
+## Phase 4 — Order fulfilment: customer order to delivery (2026-11-08)
+
+Delivered under roadmap phase 5 (Order fulfilment). Roadmap phase 3 (stock transfers and audit log) still hasn't been requested.
+
+### Completed
+
+- **Sales orders:**
+  - Draft (editable, deletable), then confirmed, partially shipped, shipped and delivered; or cancelled.
+  - Lines priced from the product's selling price unless overridden, with a per-line percentage discount and the product's tax rate applied after the discount. Gross, discount, tax and total are computed on the server with the shared `salesLineAmounts`.
+  - Shipping address defaults to the customer's; customer reference and required-by date; overdue flag for open orders past their date.
+  - Filters for status, open orders, orders waiting for a pick list, customer, warehouse and product.
+- **Availability checks:** `GET /stock/availability` returns on-hand, reserved and available per warehouse. The order form shows it live per line, with shortfalls and other warehouses that have stock. Draft orders show the same check.
+- **Reservations:**
+  - Confirmation reserves every line in the order's warehouse in one transaction, all or nothing, with a conditional update (`onHand − reserved ≥ q`). Short lines are reported together as `INSUFFICIENT_STOCK` with per-line details; the order stays a draft.
+  - Concurrent confirmations can't reserve the same units: the second either sees the first's reservation or conflicts and is retried.
+  - Adjustments already refused to take stock below the reserved quantity; that now protects real reservations.
+- **Picking and packing:**
+  - A pick list (shipment) allocates part or all of an order's unallocated quantity; several pick lists give partial fulfilment. Allocation is checked in the transaction that updates the order, so concurrent pick lists can't over-allocate.
+  - Confirming the pick records the quantity actually picked. Short picks need a reason; the missing units go back to the order, still reserved.
+  - Packing records the package count and optional weight.
+- **Dispatch:** issues the picked units from the reservation as `SHIPMENT` movements at the current average cost. On-hand and reserved fall together in one conditional update. Nothing changes physical stock before dispatch.
+- **Delivery tracking:** in transit, out for delivery, delivery attempted (reason required) and delivered (recipient required) updates with time, location and note. Times can't be in the future or before the minute of dispatch. Delivered is final and updates the order's delivered quantities.
+- **Cancellation:**
+  - Cancelling an order releases every unshipped unit's reservation and cancels its open pick lists in the same transaction. With nothing shipped the order is cancelled; after a partial shipment only the remainder is cancelled and the order shows shipped or delivered with the cancelled quantities.
+  - A shipment can be cancelled before dispatch; its units return to the order, still reserved.
+- **Order history:** every order action and every step of its shipments is recorded on the order with who and when. Shipments keep their own history and a tracking timeline.
+- **Web:**
+  - Sales orders: list with status and fulfilment filters, form with live availability and totals, detail with confirm, cancel or cancel remaining, pick list action, line quantities (ordered, reserved, on pick lists, shipped, delivered, cancelled), shipments and history. A draft whose confirmation fails is saved and shows the shortages.
+  - Shipments: queue (in the warehouse, on the way), pick list form, detail with a progress strip, inline pick form with short-pick reason, packing, dispatch and tracking dialogs, tracking timeline and history.
+  - Product detail gains "Reserved for orders". Customer names link to their order history. Ledger rows link to shipments. Dashboard gains fulfilment tiles, shown first for sales and warehouse roles.
+- **Seed:** orders at every stage through the real services: delivered, partly shipped and in transit, picking, packed, waiting for a pick list, a draft quote and a cancelled order.
+
+### Fixed or improved during this phase
+
+- Tracking times entered to the minute were rejected as "before dispatch" when recorded within the dispatch minute. The server now compares against the minute of dispatch, and the form sends no time unless the user changes it. Found by E2E, covered by an API test.
+- `History` and `ReasonDialog` moved from the purchasing feature to `components/document-parts.tsx`, since sales uses them too. The API's document helpers and shared Mongoose sub-schemas moved to `modules/common/`.
+- A phase 2 stock test set `reserved` directly in the database. It now reserves through a confirmed sales order.
+- The fulfilment invariants are checked after every API test: reserved equals what open orders hold, line counters agree with their shipments, and `SHIPMENT` movements match what was dispatched.
+
+### Changed files
+
+- `packages/shared/src/`: `schemas/sales.ts`, `dto-sales.ts`, `sales.test.ts`, `schemas/stock.ts` (SHIPMENT), `permissions.ts` (label), `index.ts`
+- `apps/api/src/`:
+  - `modules/sales/{models,sales-orders,shipments}.ts`
+  - `modules/common/{documents,schemas}.ts` (moved from purchasing)
+  - `modules/stock/{stock.service,stock.queries,stock.routes}.ts` (reserve, release, issue from reservation, availability)
+  - `modules/purchasing/*` (imports), `app.ts`
+- `apps/api/scripts/{seed-data,seed}.ts`; `apps/api/tests/{sales.test,fixtures,seed.test,stock.test}.ts`
+- `apps/web/src/`:
+  - `features/sales/**`
+  - `components/document-parts.tsx`, `components/StatusBadge.tsx`
+  - `features/catalog/ProductDetailPage.tsx`, `features/dashboard/DashboardPage.tsx`, `features/partners/PartnersPage.tsx`, `features/stock/MovementsTable.tsx`, `features/purchasing/*` (imports)
+  - `app/{router,navigation}.ts(x)`
+- `apps/web/e2e/{sales,auth}.spec.ts`
+- `docs/ARCHITECTURE.md`, `README.md`
+
+### Test results
+
+- `packages/shared`: 21 unit tests passed (3 new for sales pricing).
+- `apps/api`: 119 integration tests passed, 27 of them new for fulfilment. They cover:
+  - Pricing with discount and tax, draft editing and deletion, inactive customers and products, duplicate lines, permissions.
+  - Availability per warehouse; confirmation reserving without touching on-hand; insufficient stock refused all or nothing, with every short line reported; reserved stock protected from adjustments.
+  - Six concurrent orders of 3 against 10 available: exactly three confirm and 9 are reserved. Two multi-line orders racing for the last 4 units: exactly one confirms.
+  - A complete order through pick, pack, dispatch, in transit and delivered, with on-hand unchanged until dispatch, the SHIPMENT movement at average cost, and the full order history.
+  - Step order enforced; one dispatch out of four concurrent requests; tracking validation, including a delivery within the dispatch minute.
+  - Warehouse roles fulfil, sales managers can't; shipments refused for drafts and beyond what's left; five concurrent pick lists can't over-allocate.
+  - Partial fulfilment across two shipments; short pick returned to the order and shipped later; shipment cancellation.
+  - Cancelling a confirmed order with an open pick list, cancelling the remainder after a partial shipment, cancelling a draft, and cancellation racing a dispatch.
+  - Fulfilment queue filters and summary; overdue flag.
+  - The sales suite was run three extra times to check for flakiness.
+- `apps/web`: 6 unit tests passed.
+- Playwright: 27 E2E tests passed, 4 of them new:
+  - Sales manager orders and confirms (availability shown, reservation visible on the product), staff picks, packs and dispatches (on-hand falls by the shipped quantity), then records delivery (recipient required) and the order shows delivered.
+  - An order larger than available stock is saved as a draft with the shortage explained.
+  - One of four units shipped, the rest cancelled: reservation released, on-hand down by one.
+  - Cancelling a seeded confirmed order releases its reservation.
+- `npm run lint`, `npm run typecheck`, `prettier --check` and `npm run build` pass. All 11 architecture diagrams render.
+- Manual check in the browser at 1280 px: order form availability and totals, failed confirmation, short pick, packing, dispatch, order detail after a partial shipment.
+
+### Pending issues
+
+- Stock transfers and the audit log (roadmap phase 3) are still to do.
+- Docker images and CI are still unverified (no running Docker engine, no Git remote).
+- The web bundle is now 950 kB minified (278 kB gzipped). Route-level code splitting would help.
+- After signing in as a different user, the app can return to the previous session's page. Harmless, but sending users to the dashboard when the page isn't permitted would be friendlier.
+- Customer returns aren't handled (out of scope); a failed delivery stays in transit until it's delivered.

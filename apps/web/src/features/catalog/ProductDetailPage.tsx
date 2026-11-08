@@ -29,6 +29,8 @@ import { ApiError } from '@/lib/api-client';
 import { formatDate, formatDateTime } from '@/lib/format';
 import { PurchaseOrderStatusBadge } from '@/features/purchasing/components';
 import { useProductSupplierPrices, usePurchaseOrders } from '@/features/purchasing/api';
+import { useSalesOrders } from '@/features/sales/api';
+import { SalesOrderStatusBadge } from '@/features/sales/components';
 import { useProduct } from './api';
 import { ProductFormDialog } from './ProductFormDialog';
 
@@ -230,6 +232,7 @@ export function ProductDetailPage() {
       </Card>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
+        <ReservedCard productId={p.id} unit={p.unit} />
         <OnOrderCard productId={p.id} unit={p.unit} />
         <SupplierPricesCard productId={p.id} />
       </div>
@@ -320,6 +323,65 @@ function ThresholdForm({ level, onDone }: { level: StockLevelDto; onDone: () => 
         onCancel={onDone}
       />
     </>
+  );
+}
+
+/** Open sales orders holding this product's stock. */
+function ReservedCard({ productId, unit }: { productId: string; unit: string }) {
+  const orders = useSalesOrders({ productId, open: 'true', pageSize: 20, sort: 'requiredDate' });
+  const rows = (orders.data?.data ?? []).map((so) => ({
+    so,
+    line: so.lines.find((l) => l.productId === productId)!,
+  }));
+  const reserved = rows.reduce((sum, r) => sum + r.line.reservedQuantity, 0);
+
+  return (
+    <Card className="gap-0 overflow-hidden pb-0">
+      <CardHeader className="pb-4">
+        <CardTitle>Reserved for orders</CardTitle>
+        {reserved > 0 ? (
+          <p className="text-muted-foreground text-sm">
+            {reserved} {unit} held for confirmed sales orders
+          </p>
+        ) : null}
+      </CardHeader>
+      <Table>
+        <TableBody>
+          {rows.length === 0 ? (
+            <TableRow>
+              <TableCell className="text-muted-foreground py-6 text-center text-sm">
+                {orders.isPending ? 'Loading…' : 'Not reserved by any open sales order.'}
+              </TableCell>
+            </TableRow>
+          ) : (
+            rows.map(({ so, line }) => (
+              <TableRow key={so.id}>
+                <TableCell className="pl-6">
+                  <Link
+                    to={`/sales-orders/${so.id}`}
+                    className="font-mono text-xs font-medium hover:underline"
+                  >
+                    {so.number}
+                  </Link>
+                  <div className="text-muted-foreground text-xs">
+                    {so.customer.name} · {so.warehouse.code}
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <SalesOrderStatusBadge status={so.status} />
+                </TableCell>
+                <TableCell className={so.isOverdue ? 'text-red-700' : undefined}>
+                  {formatDate(so.requiredDate)}
+                </TableCell>
+                <TableCell className="pr-6 text-right font-medium tabular-nums">
+                  {line.reservedQuantity}
+                </TableCell>
+              </TableRow>
+            ))
+          )}
+        </TableBody>
+      </Table>
+    </Card>
   );
 }
 

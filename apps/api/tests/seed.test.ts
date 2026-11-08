@@ -17,6 +17,25 @@ describe('demo seed', () => {
     const low = await admin.get('/stock/levels?status=low');
     expect(low.body.meta.total).toBe(5);
 
+    const orders = await admin.get('/sales-orders?pageSize=100');
+    expect(
+      Object.fromEntries(
+        ['draft', 'confirmed', 'partially_shipped', 'delivered', 'cancelled'].map((status) => [
+          status,
+          orders.body.data.filter((o: { status: string }) => o.status === status).length,
+        ]),
+      ),
+    ).toEqual({ draft: 1, confirmed: 3, partially_shipped: 1, delivered: 1, cancelled: 1 });
+    const summary = await admin.get('/sales-orders/fulfilment-summary');
+    expect(summary.body.data).toEqual({
+      ordersToConfirm: 1,
+      ordersToFulfil: 2,
+      shipmentsToPick: 1,
+      shipmentsToPack: 0,
+      shipmentsToDispatch: 1,
+      shipmentsInTransit: 1,
+    });
+
     const products = await admin.get('/products?pageSize=100');
     const existing = products.body.data[0];
     const duplicateSku = await admin.post('/products', {

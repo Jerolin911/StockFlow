@@ -50,7 +50,7 @@ test('staff cannot see or open user management', async ({ page }) => {
   await expect(nav.getByRole('link', { name: 'Dashboard' })).toBeVisible();
   await expect(nav.getByRole('link', { name: 'Users' })).toHaveCount(0);
 
-  await expect(page.getByText('Ship sales orders')).toBeVisible();
+  await expect(page.getByText('Pick, pack and dispatch shipments')).toBeVisible();
   await expect(page.getByText('Post stock adjustments')).toHaveCount(0);
   await expect(page.getByText('Active accounts by role')).toHaveCount(0);
 

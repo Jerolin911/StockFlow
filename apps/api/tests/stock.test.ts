@@ -8,6 +8,7 @@ import { StockMovement } from '../src/modules/stock/stock-movement.model.js';
 import {
   api,
   createCategory,
+  createCustomer,
   createProduct,
   createWarehouse,
   expectLedgerConsistent,
@@ -211,7 +212,13 @@ describe('stock adjustments', () => {
   });
 
   it('protects reserved stock', async () => {
-    await StockLevel.updateOne({ productId: product.id, warehouseId: main.id }, { reserved: 15 });
+    const customer = await createCustomer(admin);
+    const so = await admin.post('/sales-orders', {
+      customerId: customer.id,
+      warehouseId: main.id,
+      lines: [{ productId: product.id, quantity: 15 }],
+    });
+    await admin.post(`/sales-orders/${so.body.data.id}/confirm`, {}).expect(200);
     const tooMuch = await adjust(main.id, [{ productId: product.id, quantityChange: -6 }]);
     expect(tooMuch.status).toBe(409);
     expect(tooMuch.body.error.message).toContain('Only 5');

@@ -14,6 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { StockBadge } from '@/components/StatusBadge';
 import { useCurrentUser } from '@/features/auth/auth-context';
 import { usePurchaseOrders, usePurchaseRequests } from '@/features/purchasing/api';
+import { useFulfilmentSummary } from '@/features/sales/api';
 import { useStockLevels } from '@/features/stock/api';
 import { useUserStats } from '@/features/users/api';
 import { cn } from '@/lib/utils';
@@ -119,6 +120,11 @@ const ACCESS_AREAS: { title: string; permissions: Permission[] }[] = [
 export function DashboardPage() {
   const { user, permissions } = useCurrentUser();
   const isAdmin = permissions.includes('users:manage');
+  // Roles that work orders and shipments see fulfilment first.
+  const salesFirst =
+    !isAdmin &&
+    (permissions.includes('salesOrders:write') || permissions.includes('shipments:create')) &&
+    !permissions.includes('purchaseOrders:write');
 
   return (
     <>
@@ -126,7 +132,17 @@ export function DashboardPage() {
         title="Dashboard"
         description={`Signed in as ${user.name} · ${ROLE_LABELS[user.role]}`}
       />
-      <PurchasingTiles />
+      {salesFirst ? (
+        <>
+          <FulfilmentTiles />
+          <PurchasingTiles />
+        </>
+      ) : (
+        <>
+          <PurchasingTiles />
+          <FulfilmentTiles />
+        </>
+      )}
       <div className="grid gap-6 lg:grid-cols-3">
         <LowStockCard className="lg:col-span-2" />
         {isAdmin ? (
@@ -241,52 +257,98 @@ function PurchasingTiles() {
   const open = usePurchaseOrders({ open: 'true', pageSize: 1 });
   const overdue = usePurchaseOrders({ overdue: 'true', pageSize: 1 });
 
-  const tiles = [
-    {
-      label: 'Requests awaiting approval',
-      query: requests,
-      to: '/purchase-requests?status=submitted',
-    },
-    {
-      label: 'Orders awaiting approval',
-      query: approvals,
-      to: '/purchase-orders?status=pending_approval',
-    },
-    { label: 'Open purchase orders', query: open, to: '/purchase-orders?open=true' },
-    {
-      label: 'Overdue deliveries',
-      query: overdue,
-      to: '/purchase-orders?overdue=true',
-      alert: true,
-    },
-  ];
-
   return (
-    <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      {tiles.map((tile) => {
-        const total = tile.query.data?.meta.total;
-        return (
-          <Link
-            key={tile.label}
-            to={tile.to}
-            className="bg-card hover:border-primary/40 focus-visible:ring-ring/50 rounded-xl border px-4 py-4 shadow-xs outline-none focus-visible:ring-[3px]"
-          >
-            <p className="text-muted-foreground text-sm">{tile.label}</p>
-            {total === undefined ? (
-              <Skeleton className="mt-2 h-7 w-12" />
-            ) : (
-              <p
-                className={cn(
-                  'mt-1 text-2xl font-semibold tabular-nums',
-                  tile.alert && total > 0 && 'text-red-700',
-                )}
-              >
-                {total}
-              </p>
-            )}
-          </Link>
-        );
-      })}
-    </div>
+    <Tiles
+      label="Purchasing"
+      tiles={[
+        {
+          label: 'Requests awaiting approval',
+          total: requests.data?.meta.total,
+          to: '/purchase-requests?status=submitted',
+        },
+        {
+          label: 'Orders awaiting approval',
+          total: approvals.data?.meta.total,
+          to: '/purchase-orders?status=pending_approval',
+        },
+        {
+          label: 'Open purchase orders',
+          total: open.data?.meta.total,
+          to: '/purchase-orders?open=true',
+        },
+        {
+          label: 'Overdue deliveries',
+          total: overdue.data?.meta.total,
+          to: '/purchase-orders?overdue=true',
+          alert: true,
+        },
+      ]}
+    />
+  );
+}
+
+function FulfilmentTiles() {
+  const summary = useFulfilmentSummary();
+  const s = summary.data;
+  return (
+    <Tiles
+      label="Fulfilment"
+      tiles={[
+        {
+          label: 'Sales orders to confirm',
+          total: s?.ordersToConfirm,
+          to: '/sales-orders?status=draft',
+        },
+        {
+          label: 'Orders waiting for a pick list',
+          total: s?.ordersToFulfil,
+          to: '/sales-orders?view=toFulfil',
+        },
+        {
+          label: 'Shipments to pick, pack or dispatch',
+          total: s ? s.shipmentsToPick + s.shipmentsToPack + s.shipmentsToDispatch : undefined,
+          to: '/shipments?view=pending',
+        },
+        {
+          label: 'Shipments on the way',
+          total: s?.shipmentsInTransit,
+          to: '/shipments?view=inTransit',
+        },
+      ]}
+    />
+  );
+}
+
+function Tiles({
+  label,
+  tiles,
+}: {
+  label: string;
+  tiles: { label: string; total: number | undefined; to: string; alert?: boolean }[];
+}) {
+  return (
+    <section aria-label={label} className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      {tiles.map((tile) => (
+        <Link
+          key={tile.label}
+          to={tile.to}
+          className="bg-card hover:border-primary/40 focus-visible:ring-ring/50 rounded-xl border px-4 py-4 shadow-xs outline-none focus-visible:ring-[3px]"
+        >
+          <p className="text-muted-foreground text-sm">{tile.label}</p>
+          {tile.total === undefined ? (
+            <Skeleton className="mt-2 h-7 w-12" />
+          ) : (
+            <p
+              className={cn(
+                'mt-1 text-2xl font-semibold tabular-nums',
+                tile.alert && tile.total > 0 && 'text-red-700',
+              )}
+            >
+              {tile.total}
+            </p>
+          )}
+        </Link>
+      ))}
+    </section>
   );
 }

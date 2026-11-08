@@ -38,7 +38,8 @@ import {
   usePurchaseRequestAction,
   useSupplierPrices,
 } from './api';
-import { History, PurchaseRequestStatusBadge, ReasonDialog } from './components';
+import { History, ReasonDialog } from '@/components/document-parts';
+import { PurchaseRequestStatusBadge } from './components';
 
 type Dialog = 'reject' | 'cancel' | 'delete' | 'convert' | null;
 

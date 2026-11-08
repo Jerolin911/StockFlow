@@ -11,3 +11,5 @@ export * from './schemas/master-data.js';
 export * from './schemas/stock.js';
 export * from './dto-procurement.js';
 export * from './schemas/procurement.js';
+export * from './dto-sales.js';
+export * from './schemas/sales.js';

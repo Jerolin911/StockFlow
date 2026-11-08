@@ -17,7 +17,6 @@ import { invalidState, notFound } from '../../lib/errors.js';
 import { escapeRegex, parseId, parseSort } from '../../lib/http.js';
 import { inTransaction } from '../../lib/transaction.js';
 import { authenticate, authorize, requireAuth } from '../../middleware/auth.js';
-import { Warehouse } from '../warehouses/warehouse.model.js';
 import {
   dateFromIso,
   historyDto,
@@ -29,8 +28,10 @@ import {
   snapshot,
   todayIso,
   userRef,
+  warehouseLookup,
   type Actor,
-} from './common.js';
+  type WarehouseLookup,
+} from '../common/documents.js';
 import {
   PurchaseOrder,
   PurchaseRequest,
@@ -44,13 +45,6 @@ const CLOSED_STATUSES: PurchaseOrderStatus[] = ['closed', 'cancelled'];
 
 function isReceivable(status: PurchaseOrderStatus) {
   return (RECEIVABLE_PO_STATUSES as readonly string[]).includes(status);
-}
-
-type WarehouseLookup = Map<string, { code: string; name: string }>;
-
-async function warehouseLookup(ids: Types.ObjectId[]): Promise<WarehouseLookup> {
-  const warehouses = await Warehouse.find({ _id: { $in: ids } }, { code: 1, name: 1 }).lean();
-  return new Map(warehouses.map((w) => [w._id.toString(), { code: w.code, name: w.name }]));
 }
 
 export function toPurchaseOrderDto(

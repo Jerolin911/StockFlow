@@ -9,6 +9,8 @@ const TONES = {
   gray: 'text-muted-foreground',
 } as const;
 
+export type Tone = keyof typeof TONES;
+
 export function StatusBadge({
   tone,
   children,

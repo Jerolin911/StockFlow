@@ -5,6 +5,8 @@ import {
   ClipboardPen,
   FileText,
   PackageCheck,
+  PackageOpen,
+  ShoppingCart,
   Contact,
   LayoutDashboard,
   Package,
@@ -52,7 +54,14 @@ export const NAV_SECTIONS: NavSection[] = [
       { to: '/suppliers', label: 'Suppliers', icon: Truck },
     ],
   },
-  { label: 'Sales', items: [{ to: '/customers', label: 'Customers', icon: Contact }] },
+  {
+    label: 'Sales',
+    items: [
+      { to: '/sales-orders', label: 'Sales orders', icon: ShoppingCart },
+      { to: '/shipments', label: 'Shipments', icon: PackageOpen },
+      { to: '/customers', label: 'Customers', icon: Contact },
+    ],
+  },
   {
     label: 'Administration',
     items: [

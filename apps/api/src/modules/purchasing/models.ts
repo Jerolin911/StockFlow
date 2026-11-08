@@ -1,26 +1,10 @@
 import { Schema, model, type InferSchemaType, type Types } from 'mongoose';
 import { PURCHASE_ORDER_STATUSES, PURCHASE_REQUEST_STATUSES, UNITS } from '@stockflow/shared';
-
-/** Who did something, with the name at that moment so history reads correctly after renames. */
-const userSnapshot = new Schema(
-  { _id: { type: Schema.Types.ObjectId, ref: 'User', required: true }, name: String },
-  { _id: false },
-);
-
-const historyEntry = new Schema(
-  {
-    action: { type: String, required: true },
-    at: { type: Date, required: true },
-    by: { type: userSnapshot, required: true },
-    note: { type: String, default: '' },
-  },
-  { _id: false },
-);
-
-const partnerSnapshot = new Schema(
-  { _id: { type: Schema.Types.ObjectId, required: true }, code: String, name: String },
-  { _id: false },
-);
+import {
+  historyEntrySchema,
+  partnerSnapshotSchema,
+  userSnapshotSchema,
+} from '../common/schemas.js';
 
 // Supplier price list
 
@@ -54,17 +38,17 @@ const purchaseRequestSchema = new Schema(
     number: { type: String, required: true },
     status: { type: String, enum: PURCHASE_REQUEST_STATUSES, required: true, default: 'draft' },
     warehouseId: { type: Schema.Types.ObjectId, ref: 'Warehouse', required: true },
-    supplier: { type: partnerSnapshot, default: null },
+    supplier: { type: partnerSnapshotSchema, default: null },
     neededBy: { type: Date, default: null },
     notes: { type: String, default: '' },
     lines: { type: [requestLineSchema], required: true },
-    requestedBy: { type: userSnapshot, required: true },
+    requestedBy: { type: userSnapshotSchema, required: true },
     purchaseOrder: {
       type: new Schema({ _id: Schema.Types.ObjectId, number: String }, { _id: false }),
       default: null,
     },
     rejectionReason: { type: String, default: '' },
-    history: { type: [historyEntry], default: [] },
+    history: { type: [historyEntrySchema], default: [] },
   },
   { timestamps: true },
 );
@@ -101,7 +85,7 @@ const purchaseOrderSchema = new Schema(
   {
     number: { type: String, required: true },
     status: { type: String, enum: PURCHASE_ORDER_STATUSES, required: true, default: 'draft' },
-    supplier: { type: partnerSnapshot, required: true },
+    supplier: { type: partnerSnapshotSchema, required: true },
     warehouseId: { type: Schema.Types.ObjectId, ref: 'Warehouse', required: true },
     purchaseRequest: {
       type: new Schema({ _id: Schema.Types.ObjectId, number: String }, { _id: false }),
@@ -114,14 +98,14 @@ const purchaseOrderSchema = new Schema(
     subtotal: { type: Number, required: true },
     taxTotal: { type: Number, required: true },
     total: { type: Number, required: true },
-    createdBy: { type: userSnapshot, required: true },
-    approvedBy: { type: userSnapshot, default: null },
+    createdBy: { type: userSnapshotSchema, required: true },
+    approvedBy: { type: userSnapshotSchema, default: null },
     approvedAt: { type: Date, default: null },
     rejectionReason: { type: String, default: '' },
     cancelReason: { type: String, default: '' },
     closeReason: { type: String, default: '' },
     receiptCount: { type: Number, required: true, default: 0 },
-    history: { type: [historyEntry], default: [] },
+    history: { type: [historyEntrySchema], default: [] },
   },
   { timestamps: true },
 );
@@ -162,7 +146,7 @@ const goodsReceiptSchema = new Schema(
       type: new Schema({ _id: Schema.Types.ObjectId, number: String }, { _id: false }),
       required: true,
     },
-    supplier: { type: partnerSnapshot, required: true },
+    supplier: { type: partnerSnapshotSchema, required: true },
     warehouseId: { type: Schema.Types.ObjectId, ref: 'Warehouse', required: true },
     receivedAt: { type: Date, required: true },
     // Copied from the order so on-time performance doesn't change if the order is edited later.
@@ -170,7 +154,7 @@ const goodsReceiptSchema = new Schema(
     deliveryNote: { type: String, default: '' },
     notes: { type: String, default: '' },
     lines: { type: [receiptLineSchema], required: true },
-    createdBy: { type: userSnapshot, required: true },
+    createdBy: { type: userSnapshotSchema, required: true },
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 );

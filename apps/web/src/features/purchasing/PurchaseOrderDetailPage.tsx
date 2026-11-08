@@ -32,7 +32,8 @@ import {
   usePurchaseOrderAction,
   type PurchaseOrderAction,
 } from './api';
-import { History, PurchaseOrderStatusBadge, ReasonDialog } from './components';
+import { History, ReasonDialog } from '@/components/document-parts';
+import { PurchaseOrderStatusBadge } from './components';
 
 export function PurchaseOrderDetailPage() {
   const { id } = useParams<{ id: string }>();

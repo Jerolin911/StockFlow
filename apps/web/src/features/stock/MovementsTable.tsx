@@ -75,7 +75,9 @@ export function MovementsTable({
                   to={
                     m.reference.type === 'goodsReceipt'
                       ? `/goods-receipts/${m.reference.id}`
-                      : `/stock/adjustments/${m.reference.id}`
+                      : m.reference.type === 'shipment'
+                        ? `/shipments/${m.reference.id}`
+                        : `/stock/adjustments/${m.reference.id}`
                   }
                   className="font-mono text-xs hover:underline"
                 >

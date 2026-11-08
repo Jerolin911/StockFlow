@@ -3,9 +3,15 @@ import {
   createCustomerSchema,
   createProductSchema,
   createSupplierSchema,
+  confirmPickSchema,
+  createShipmentSchema,
+  dispatchShipmentSchema,
   goodsReceiptSchema,
   openingStockSchema,
+  packShipmentSchema,
   purchaseOrderSchema,
+  salesOrderSchema,
+  trackingEventSchema,
   stockAdjustmentSchema,
   type Role,
   type Unit,
@@ -21,10 +27,23 @@ import {
   historyEntry,
   snapshot,
   type Actor,
-} from '../src/modules/purchasing/common.js';
+} from '../src/modules/common/documents.js';
 import { postGoodsReceipt } from '../src/modules/purchasing/goods-receipts.js';
 import { PurchaseOrder, PurchaseRequest, SupplierPrice } from '../src/modules/purchasing/models.js';
 import { createPurchaseOrder } from '../src/modules/purchasing/purchase-orders.js';
+import { SalesOrder, Shipment } from '../src/modules/sales/models.js';
+import {
+  cancelSalesOrder,
+  confirmSalesOrder,
+  createSalesOrder,
+} from '../src/modules/sales/sales-orders.js';
+import {
+  addTrackingEvent,
+  confirmPick,
+  createShipment,
+  dispatch,
+  pack,
+} from '../src/modules/sales/shipments.js';
 import { postAdjustment, registerOpeningStock } from '../src/modules/stock/adjustments.service.js';
 import { User } from '../src/modules/users/user.model.js';
 import { Warehouse } from '../src/modules/warehouses/warehouse.model.js';
@@ -220,9 +239,176 @@ export async function seedDatabase(): Promise<void> {
   for (const supplier of SUPPLIERS) {
     supplierIds.push((await suppliers.create(createSupplierSchema.parse(supplier)))._id.toString());
   }
-  for (const customer of CUSTOMERS) await customers.create(createCustomerSchema.parse(customer));
+  const customerIds: string[] = [];
+  for (const customer of CUSTOMERS) {
+    customerIds.push((await customers.create(createCustomerSchema.parse(customer)))._id.toString());
+  }
 
   await seedProcurement(users, supplierIds, productIds, warehouseId);
+  await seedSales(users, customerIds, productIds, warehouseId);
+}
+
+const actorFor =
+  (users: SeedUser[]) =>
+  (role: Role): Actor => {
+    const u = users.find((user) => user.role === role)!;
+    return { id: u._id.toString(), name: u.name, email: u.email, role, mustChangePassword: false };
+  };
+
+/**
+ * Sales orders in each fulfilment stage, reserved, picked, packed, dispatched and delivered
+ * through the real services so reservations and the ledger agree.
+ */
+async function seedSales(
+  users: SeedUser[],
+  customerIds: string[],
+  productIds: string[],
+  warehouseId: (code: string) => string,
+) {
+  const actor = actorFor(users);
+  const sales = actor('sales_manager');
+  const staff = actor('staff');
+  const [dental, school, architects, coworking, logistics] = customerIds as [
+    string,
+    string,
+    string,
+    string,
+    string,
+  ];
+  const inDays = (days: number) => {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+  };
+
+  const order = async (
+    customerId: string,
+    lines: [number, number, number?][],
+    extra: Record<string, unknown> = {},
+    confirm = true,
+  ) => {
+    const id = await createSalesOrder(
+      salesOrderSchema.parse({
+        customerId,
+        warehouseId: warehouseId('MAIN'),
+        lines: lines.map(([i, quantity, discountRate]) => ({
+          productId: productIds[i],
+          quantity,
+          ...(discountRate ? { discountRate } : {}),
+        })),
+        ...extra,
+      }),
+      sales,
+    );
+    if (confirm) await confirmSalesOrder(id, sales);
+    return id;
+  };
+
+  /** Creates a pick list for the given product quantities and returns its id. */
+  const pickList = async (salesOrderId: string, lines: [number, number][]) => {
+    const so = await SalesOrder.findById(salesOrderId).lean();
+    return createShipment(
+      createShipmentSchema.parse({
+        salesOrderId,
+        lines: lines.map(([i, quantity]) => ({
+          soLineId: so!.lines.find((l) => l.productId.toString() === productIds[i])!._id.toString(),
+          quantity,
+        })),
+      }),
+      staff,
+    );
+  };
+  const pickAll = async (shipmentId: string) => {
+    const shipment = await Shipment.findById(shipmentId).lean();
+    await confirmPick(
+      shipmentId,
+      confirmPickSchema.parse({
+        lines: shipment!.lines.map((l) => ({
+          lineId: l._id.toString(),
+          pickedQuantity: l.quantity,
+        })),
+      }),
+      staff,
+    );
+  };
+  const packed = (shipmentId: string, packageCount: number, weightGrams: number) =>
+    pack(shipmentId, packShipmentSchema.parse({ packageCount, weightGrams }), staff);
+  const dispatched = (shipmentId: string, carrier: string, trackingNumber = '') =>
+    dispatch(shipmentId, dispatchShipmentSchema.parse({ carrier, trackingNumber }), staff);
+  const track = (shipmentId: string, event: Record<string, unknown>) =>
+    addTrackingEvent(shipmentId, trackingEventSchema.parse(event), staff);
+
+  // Delivered in full.
+  const dentalOrder = await order(dental, [
+    [0, 20],
+    [3, 2],
+  ]);
+  const dentalShipment = await pickList(dentalOrder, [
+    [0, 20],
+    [3, 2],
+  ]);
+  await pickAll(dentalShipment);
+  await packed(dentalShipment, 2, 9800);
+  await dispatched(dentalShipment, 'Own van');
+  await track(dentalShipment, { type: 'delivered', receivedBy: 'Reception' });
+
+  // Half the paper shipped and on the way; the rest and the pens still reserved.
+  const schoolOrder = await order(
+    school,
+    [
+      [0, 40, 500],
+      [1, 10, 500],
+    ],
+    { customerReference: 'GPS-PO-2231', requiredDate: inDays(5) },
+  );
+  const schoolShipment = await pickList(schoolOrder, [[0, 20]]);
+  await pickAll(schoolShipment);
+  await packed(schoolShipment, 4, 25000);
+  await dispatched(schoolShipment, 'Northline Freight', 'NLF-40031877');
+  await track(schoolShipment, { type: 'in_transit', location: 'Riverside hub' });
+
+  // Being picked.
+  const architectsOrder = await order(
+    architects,
+    [
+      [10, 2],
+      [8, 1],
+    ],
+    { requiredDate: inDays(3) },
+  );
+  await pickList(architectsOrder, [
+    [10, 2],
+    [8, 1],
+  ]);
+
+  // Packed and waiting for the carrier.
+  const logisticsOrder = await order(logistics, [
+    [13, 30],
+    [15, 5],
+  ]);
+  const logisticsShipment = await pickList(logisticsOrder, [
+    [13, 30],
+    [15, 5],
+  ]);
+  await pickAll(logisticsShipment);
+  await packed(logisticsShipment, 3, 14200);
+
+  // Confirmed and waiting for a pick list.
+  await order(
+    coworking,
+    [
+      [6, 6],
+      [9, 10],
+    ],
+    { requiredDate: inDays(2) },
+  );
+
+  // Draft quote for keyboards; would take MAIN below its reorder point.
+  await order(coworking, [[7, 4, 1000]], { notes: 'Quote for the new hot-desk area' }, false);
+
+  // Cancelled before anything was picked.
+  const cancelled = await order(dental, [[11, 1]]);
+  await cancelSalesOrder(cancelled, 'Customer chose a different desk model', sales);
 }
 
 type SeedUser = { _id: mongoose.Types.ObjectId; name: string; email: string; role: Role };
@@ -234,10 +420,7 @@ async function seedProcurement(
   productIds: string[],
   warehouseId: (code: string) => string,
 ) {
-  const actor = (role: Role): Actor => {
-    const u = users.find((user) => user.role === role)!;
-    return { id: u._id.toString(), name: u.name, email: u.email, role, mustChangePassword: false };
-  };
+  const actor = actorFor(users);
   const procurement = actor('procurement_manager');
   const admin = actor('admin');
   const staff = actor('staff');

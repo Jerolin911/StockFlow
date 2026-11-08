@@ -2,7 +2,7 @@ import { Types, type ClientSession } from 'mongoose';
 import type { HistoryEntryDto } from '@stockflow/shared';
 import { AppError } from '../../lib/errors.js';
 import type { AuthContext } from '../../types/express.js';
-import { suppliers } from '../partners/partners.js';
+import { customers, suppliers } from '../partners/partners.js';
 import { Product } from '../products/product.model.js';
 import { Warehouse } from '../warehouses/warehouse.model.js';
 
@@ -68,6 +68,22 @@ export async function requireActiveSupplier(id: string, session?: ClientSession)
   return supplier;
 }
 
+export async function requireActiveCustomer(id: string, session?: ClientSession) {
+  const customer = await customers.Model.findById(id)
+    .session(session ?? null)
+    .lean<{
+      _id: Types.ObjectId;
+      code: string;
+      name: string;
+      isActive: boolean;
+      address?: string | null;
+      shippingAddress?: string | null;
+    }>();
+  if (!customer) throw validation('customerId', 'Customer not found');
+  if (!customer.isActive) throw validation('customerId', 'This customer is inactive');
+  return customer;
+}
+
 /** Loads products for document lines; every product must exist and be active. */
 export async function loadActiveProducts(productIds: string[], session?: ClientSession) {
   const products = await Product.find({ _id: { $in: productIds } })
@@ -85,3 +101,15 @@ export async function loadActiveProducts(productIds: string[], session?: ClientS
   if (issues.length > 0) throw new AppError(400, 'VALIDATION_ERROR', issues[0]!.message, issues);
   return (id: string) => byId.get(id)!;
 }
+
+export type WarehouseLookup = Map<string, { code: string; name: string }>;
+
+export async function warehouseLookup(ids: Types.ObjectId[]): Promise<WarehouseLookup> {
+  const warehouses = await Warehouse.find({ _id: { $in: ids } }, { code: 1, name: 1 }).lean();
+  return new Map(warehouses.map((w) => [w._id.toString(), { code: w.code, name: w.name }]));
+}
+
+export const warehouseRef = (lookup: WarehouseLookup, id: Types.ObjectId) => ({
+  id: id.toString(),
+  ...(lookup.get(id.toString()) ?? { code: '', name: '' }),
+});

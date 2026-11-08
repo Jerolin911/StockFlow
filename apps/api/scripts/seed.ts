@@ -11,7 +11,9 @@ await connectDatabase(env.MONGODB_URI);
 await seedDatabase();
 await disconnectDatabase();
 
-console.log('Reset the database and seeded demo warehouses, categories, products, stock,');
-console.log('suppliers and customers. Demo users:');
+console.log(
+  'Reset the database and seeded demo warehouses, products, stock, suppliers, customers,',
+);
+console.log('purchase orders and sales orders. Demo users:');
 for (const user of DEMO_USERS) console.log(`  ${user.role.padEnd(20)} ${user.email}`);
 console.log('Password: see DEMO_PASSWORD in apps/api/scripts/seed-data.ts or SEED_PASSWORD.');
