@@ -51,7 +51,17 @@ Open http://localhost:5173. Seeded accounts, one per role:
 | Sales Manager       | `sales@stockflow.test`       |
 | Staff               | `staff@stockflow.test`       |
 
-The demo password is `DEMO_PASSWORD` in [apps/api/scripts/seed-data.ts](apps/api/scripts/seed-data.ts), or `SEED_PASSWORD` if you set it. Seed data is for demonstration only.
+The demo password is `DEMO_PASSWORD` in [apps/api/scripts/seed-data.ts](apps/api/scripts/seed-data.ts), or `SEED_PASSWORD` if you set it.
+
+`npm run seed` drops the development database and creates three warehouses, five categories, 19 products, suppliers and customers, and posts opening stock plus one adjustment through the same services the API uses, so the movement ledger is consistent. Seed data is for demonstration only and the script refuses to run with `NODE_ENV=production`.
+
+## Inventory rules
+
+- Every change to a stock quantity writes a movement in the same MongoDB transaction; the ledger always sums to on-hand.
+- Available = on hand − reserved. Withdrawals can't take available stock below zero, even under concurrent requests.
+- Opening stock can be registered once per product per warehouse, before any other movement there. Later corrections are adjustments.
+- Low stock: available ≤ threshold in a warehouse that holds the product. The threshold is the product's, or a per-warehouse override.
+- Leaving the SKU blank generates `<category code>-00001`; SKUs can't be changed afterwards.
 
 ## Checks
 

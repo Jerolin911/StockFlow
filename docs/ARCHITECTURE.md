@@ -379,36 +379,42 @@ warehouses {
 // indexes: { code: 1 } unique
 
 categories {
-  name: string; description?: string
+  name: string                // unique, case-insensitive
+  code: string                // 2–6 chars, unique; prefixes generated SKUs
+  description: string
 }
-// indexes: { name: 1 } unique (collation strength 2 for case-insensitive uniqueness)
+// indexes: { name: 1 } unique (collation strength 2), { code: 1 } unique
+// delete only when no product references the category
 
 products {
-  sku: string; name: string; description?: string
-  categoryId?: Ref<categories>
-  unit: string                // 'pcs', 'box', 'g', 'm' ...
-  barcode?: string
-  costPrice: money            // default purchase price for new POs
+  sku: string                 // uppercase, unique, immutable after creation
+  name: string; description: string
+  categoryId: Ref<categories> // required
+  unit: 'pcs' | 'box' | 'pack' | 'pair' | 'set' | 'roll' | 'bottle' | 'bag' | 'm' | 'g' | 'ml'
+  barcode: string             // '' when none
+  costPrice: money            // default purchase price and opening-stock cost
   sellingPrice: money         // default price for new SOs
   taxRate: number             // basis points
-  avgCost: money              // moving weighted average, maintained by receipts
-  reorderPoint: number        // per-warehouse threshold
-  reorderQuantity: number     // suggested PO quantity
+  avgCost: money              // moving weighted average, maintained by costed stock-in
+  reorderPoint: number        // default low-stock threshold per warehouse; 0 = off
+  reorderQuantity: number     // suggested restock quantity
   isActive: boolean
 }
-// indexes: { sku: 1 } unique, { barcode: 1 } unique partial (barcode exists),
-//          { categoryId: 1 }, { isActive: 1, name: 1 },
-//          text index { name, sku, barcode } for search
+// indexes: { sku: 1 } unique, { barcode: 1 } unique partial (barcode > ''),
+//          { categoryId: 1 }, { isActive: 1, name: 1 }
+// SKU generation: blank SKU → `${category.code}-${seq:05}` from counter `sku:${code}`,
+// skipping numbers already taken by manually entered SKUs.
 
 suppliers / customers {       // same shape, separate collections
-  code: string; name: string
-  contactName?: string; email?: string; phone?: string
-  address?: string            // customers also: shippingAddress?
-  leadTimeDays?: number       // suppliers only: default expected delivery offset for new POs
-  notes?: string
+  code: string                // unique, immutable; blank → generated SUP-0001 / CUS-0001
+  name: string
+  contactName: string; email: string; phone: string
+  address: string; notes: string
+  leadTimeDays: number | null // suppliers only: default delivery offset for new POs
+  shippingAddress: string     // customers only
   isActive: boolean
 }
-// indexes: { code: 1 } unique, { isActive: 1, name: 1 }, text { name, code, email }
+// indexes: { code: 1 } unique, { isActive: 1, name: 1 }
 ```
 
 #### Inventory
@@ -419,33 +425,38 @@ stockLevels {
   warehouseId: Ref<warehouses>
   onHand: number              // physically in the warehouse
   reserved: number            // committed to confirmed sales orders
+  reorderPoint: number | null // per-warehouse threshold override; null = product default
 }
 // indexes: { productId: 1, warehouseId: 1 } unique, { warehouseId: 1 }
-// schema validator: onHand ≥ 0, reserved ≥ 0 (enforced by conditional updates too)
+// onHand ≥ 0 and reserved ≤ onHand are enforced by conditional updates in stock.service.ts,
+// the only code that writes onHand/reserved. Threshold edits are configuration, not movements.
 
 stockMovements {              // append-only ledger, never updated or deleted
   productId: Ref<products>; warehouseId: Ref<warehouses>
-  type: 'RECEIPT' | 'SHIPMENT' | 'ADJUSTMENT' | 'TRANSFER_OUT' | 'TRANSFER_IN'
+  type: 'OPENING' | 'ADJUSTMENT'          // later: RECEIPT, SHIPMENT, TRANSFER_OUT, TRANSFER_IN
   quantity: number            // signed: + into the warehouse, − out
   balanceAfter: number        // onHand after this movement
-  unitCost: money             // receipt: PO cost; others: avgCost at the time
-  reference: { type: 'goodsReceipt' | 'shipment' | 'adjustment' | 'transfer', id: ObjectId, number: string }
-  note?: string
+  unitCost: money             // opening: given cost; adjustment: avgCost at the time
+  reference: { type: 'opening' | 'adjustment', id: ObjectId, number: string }
   createdBy: Ref<users>; createdAt: Date
 }
 // indexes: { productId: 1, warehouseId: 1, createdAt: -1 },
-//          { warehouseId: 1, createdAt: -1 }, { 'reference.id': 1 }, { type: 1, createdAt: -1 }
+//          { warehouseId: 1, createdAt: -1 }, { createdAt: -1 }, { 'reference.id': 1 }
 
-stockAdjustments {
-  number: string
+stockAdjustments {            // opening-stock registrations and adjustments
+  number: string              // OPN-2026-00001 or ADJ-2026-00001
+  type: 'opening' | 'adjustment'
   warehouseId: Ref<warehouses>
-  reason: 'count' | 'damage' | 'loss' | 'found' | 'other'
-  notes?: string
-  lines: [{ productId, sku, name, quantityChange: number /* signed, ≠ 0 */, previousOnHand: number, unitCost: money }]
+  reason: 'count' | 'damage' | 'loss' | 'found' | 'correction' | 'other' | null  // null for opening
+  notes: string               // required when reason is 'other'
+  lines: [{ productId, sku, name, unit, quantityChange /* signed, ≠ 0 */,
+            previousOnHand, balanceAfter, unitCost }]
   createdBy; createdAt
 }
 // posted at creation; immutable
-// indexes: { number: 1 } unique, { warehouseId: 1, createdAt: -1 }
+// indexes: { number: 1 } unique, { createdAt: -1 }, { warehouseId: 1, createdAt: -1 }
+// Opening stock is allowed only while the product has no movements in that warehouse.
+// Stock counts send countedQuantity; the change (counted − onHand) is computed in the transaction.
 
 stockTransfers {
   number: string
@@ -545,15 +556,15 @@ shipments {
 
 ### 4.1 Quantities
 
-| Figure            | Definition                                                                                                   | Stored or derived       |
-| ----------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------- |
-| `onHand`          | Units physically in a warehouse                                                                              | Stored on `stockLevels` |
-| `reserved`        | Units committed to confirmed, unshipped sales order lines                                                    | Stored on `stockLevels` |
-| `available`       | `onHand − reserved`                                                                                          | Derived                 |
-| `incoming`        | Σ `(quantity − receivedQuantity)` over lines of POs in `approved` or `partially_received` for that warehouse | Derived (aggregation)   |
-| `inTransit`       | Σ line quantities of transfers in `in_transit`, by destination                                               | Derived                 |
-| Low stock         | `available ≤ product.reorderPoint` in a warehouse (only when `reorderPoint > 0`)                             | Derived                 |
-| Suggested reorder | `max(reorderQuantity, reorderPoint − available − incoming)`                                                  | Derived                 |
+| Figure            | Definition                                                                                                                        | Stored or derived       |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `onHand`          | Units physically in a warehouse                                                                                                   | Stored on `stockLevels` |
+| `reserved`        | Units committed to confirmed, unshipped sales order lines                                                                         | Stored on `stockLevels` |
+| `available`       | `onHand − reserved`                                                                                                               | Derived                 |
+| `incoming`        | Σ `(quantity − receivedQuantity)` over lines of POs in `approved` or `partially_received` for that warehouse                      | Derived (aggregation)   |
+| `inTransit`       | Σ line quantities of transfers in `in_transit`, by destination                                                                    | Derived                 |
+| Low stock         | `available ≤ (level.reorderPoint ?? product.reorderPoint)` in an active warehouse that holds the product, when that threshold > 0 | Derived                 |
+| Suggested reorder | `max(reorderQuantity, reorderPoint − available − incoming)`                                                                       | Derived                 |
 
 ### 4.2 Costing: moving weighted average
 
@@ -729,8 +740,8 @@ flowchart LR
 | Products        | `GET /products?search&categoryId&isActive&lowStock`, `POST`, `GET /products/:id` (with stock per warehouse), `PATCH /products/:id`                                                                                                                                                                     | write: `products:write`             |
 | Suppliers       | `GET`, `POST /suppliers`, `GET`, `PATCH /suppliers/:id` (detail includes open POs)                                                                                                                                                                                                                     | write: `suppliers:write`            |
 | Customers       | `GET`, `POST /customers`, `GET`, `PATCH /customers/:id` (detail includes open SOs)                                                                                                                                                                                                                     | write: `customers:write`            |
-| Stock           | `GET /stock/levels?productId&warehouseId&lowStock`, `GET /stock/movements?productId&warehouseId&type&from&to`, `GET /stock/low-stock`                                                                                                                                                                  | any                                 |
-| Adjustments     | `GET /stock-adjustments`, `POST /stock-adjustments` (posts immediately), `GET /stock-adjustments/:id`                                                                                                                                                                                                  | write: `stock:adjust`               |
+| Stock           | `GET /stock/levels?search&warehouseId&categoryId&productId&status(low\|out\|available)&sort`, `PATCH /stock/levels/:id` (threshold override, `products:write`), `GET /stock/movements?productId&warehouseId&type&direction(in\|out)&from&to`                                                           | read: any                           |
+| Adjustments     | `GET /stock/adjustments?type&warehouseId`, `GET /stock/adjustments/:id`, `POST /stock/adjustments` (posts immediately), `POST /stock/opening`                                                                                                                                                          | write: `stock:adjust`               |
 | Transfers       | `GET`, `POST /stock-transfers`, `GET`, `PATCH`, `DELETE /stock-transfers/:id` (draft), `POST /stock-transfers/:id/dispatch`, `/receive`, `/cancel`                                                                                                                                                     | write: `stock:transfer`             |
 | Purchase orders | `GET`, `POST /purchase-orders`, `GET`, `PATCH`, `DELETE /purchase-orders/:id` (draft), `POST /purchase-orders/:id/submit`, `/cancel`, `/close`                                                                                                                                                         | `purchaseOrders:write`              |
 |                 | `POST /purchase-orders/:id/approve`, `/reject`                                                                                                                                                                                                                                                         | `purchaseOrders:approve`            |
@@ -891,24 +902,27 @@ Vitest runs both apps and the shared package.
 
 ## 10. Key technical decisions
 
-| #   | Decision                                                                                                | Reason                                                                                   | Trade-off                                                                       |
-| --- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| 1   | No invoicing, payments or financial status tracking                                                     | Keeps the product focused on inventory, procurement, warehouse operations and fulfilment | Order prices and totals are informational; billing happens in another system    |
-| 2   | MongoDB replica set and multi-document transactions for every stock posting                             | Stock levels, ledger, order lines and numbering must change together                     | A replica set is needed even in development (single node in Docker and tests)   |
-| 3   | Conditional atomic updates as stock guards, inside the transaction                                      | Prevents overselling under concurrent requests without application-level locks           | Guards must be written carefully per operation and covered by concurrency tests |
-| 4   | Separate `stockLevels` (current state) and an append-only `stockMovements` (ledger)                     | Fast reads of current stock plus a full audit trail that can be reconciled               | Two writes per change, both in one transaction                                  |
-| 5   | Integer minor units for money, basis points for tax, integer quantities                                 | Exact arithmetic without decimal libraries                                               | Fractional quantities must use a smaller base unit                              |
-| 6   | Moving weighted average cost per product                                                                | Standard for SMBs; simple and stable valuation and cost of goods shipped                 | Not FIFO; cost is shared across warehouses                                      |
-| 7   | Embedded line items with snapshots                                                                      | Atomic document updates; historical accuracy                                             | Product renames don't change old documents (intended)                           |
-| 8   | Reservation at SO confirmation, no backorders                                                           | Keeps `available` meaningful; simpler fulfilment                                         | Orders larger than available stock must wait for stock or be split              |
-| 9   | Two-step transfers (dispatch, receive)                                                                  | Matches physical reality; in-transit stock is visible                                    | One extra action compared with an instant transfer                              |
-| 10  | Fixed roles with a permission map in a shared package                                                   | Covers the business needs; one source of truth for API and UI                            | Custom roles would need a schema change later                                   |
-| 11  | Short-lived JWT in memory and a rotating refresh token in an httpOnly cookie, user reloaded per request | XSS cannot read the refresh token; deactivation and role changes apply immediately       | One user lookup per request                                                     |
-| 12  | Shared Zod schemas between web and api                                                                  | One validation definition; typed forms and requests                                      | The shared package must stay free of Node-only and browser-only code            |
-| 13  | Offset pagination                                                                                       | Page numbers suit back-office tables; data volumes are modest                            | Slower on very deep pages (not expected here)                                   |
-| 14  | Reports computed by aggregation, not stored                                                             | No duplicated state to keep in sync                                                      | Heavier queries; mitigated by indexes                                           |
-| 15  | Vitest everywhere, Playwright for E2E                                                                   | One unit and integration runner, native TypeScript and ESM                               | —                                                                               |
-| 16  | Feature-module layout on both api and web                                                               | Each domain is self-contained; phases add folders without reshaping existing code        | Some repeated boilerplate per module                                            |
+| #   | Decision                                                                                                | Reason                                                                                             | Trade-off                                                                       |
+| --- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| 1   | No invoicing, payments or financial status tracking                                                     | Keeps the product focused on inventory, procurement, warehouse operations and fulfilment           | Order prices and totals are informational; billing happens in another system    |
+| 2   | MongoDB replica set and multi-document transactions for every stock posting                             | Stock levels, ledger, order lines and numbering must change together                               | A replica set is needed even in development (single node in Docker and tests)   |
+| 3   | Conditional atomic updates as stock guards, inside the transaction                                      | Prevents overselling under concurrent requests without application-level locks                     | Guards must be written carefully per operation and covered by concurrency tests |
+| 4   | Separate `stockLevels` (current state) and an append-only `stockMovements` (ledger)                     | Fast reads of current stock plus a full audit trail that can be reconciled                         | Two writes per change, both in one transaction                                  |
+| 5   | Integer minor units for money, basis points for tax, integer quantities                                 | Exact arithmetic without decimal libraries                                                         | Fractional quantities must use a smaller base unit                              |
+| 6   | Moving weighted average cost per product                                                                | Standard for SMBs; simple and stable valuation and cost of goods shipped                           | Not FIFO; cost is shared across warehouses                                      |
+| 7   | Embedded line items with snapshots                                                                      | Atomic document updates; historical accuracy                                                       | Product renames don't change old documents (intended)                           |
+| 8   | Reservation at SO confirmation, no backorders                                                           | Keeps `available` meaningful; simpler fulfilment                                                   | Orders larger than available stock must wait for stock or be split              |
+| 9   | Two-step transfers (dispatch, receive)                                                                  | Matches physical reality; in-transit stock is visible                                              | One extra action compared with an instant transfer                              |
+| 10  | Fixed roles with a permission map in a shared package                                                   | Covers the business needs; one source of truth for API and UI                                      | Custom roles would need a schema change later                                   |
+| 11  | Short-lived JWT in memory and a rotating refresh token in an httpOnly cookie, user reloaded per request | XSS cannot read the refresh token; deactivation and role changes apply immediately                 | One user lookup per request                                                     |
+| 12  | Shared Zod schemas between web and api                                                                  | One validation definition; typed forms and requests                                                | The shared package must stay free of Node-only and browser-only code            |
+| 13  | Offset pagination                                                                                       | Page numbers suit back-office tables; data volumes are modest                                      | Slower on very deep pages (not expected here)                                   |
+| 14  | Reports computed by aggregation, not stored                                                             | No duplicated state to keep in sync                                                                | Heavier queries; mitigated by indexes                                           |
+| 15  | Vitest everywhere, Playwright for E2E                                                                   | One unit and integration runner, native TypeScript and ESM                                         | —                                                                               |
+| 16  | Feature-module layout on both api and web                                                               | Each domain is self-contained; phases add folders without reshaping existing code                  | Some repeated boilerplate per module                                            |
+| 17  | Generated SKUs `<category code>-00001` from a per-category counter; SKUs immutable                      | Readable, unique codes without manual effort; documents and history keep referring to the same SKU | Renaming a category code affects only new SKUs                                  |
+| 18  | Opening stock only before any other movement in that warehouse                                          | Keeps "opening" meaningful and auditable; later corrections are adjustments with a reason          | A late first registration must use an adjustment if anything moved already      |
+| 19  | Update schemas built from field definitions without defaults                                            | Zod applies defaults inside `.partial()`, which would silently overwrite stored values on PATCH    | Create schemas repeat the defaults explicitly                                   |
 
 Dependencies beyond the required stack are limited to: `react-hook-form` and `@hookform/resolvers` (shadcn forms), `@tanstack/react-table`, `pino` and `pino-http`, `helmet`, `cors`, `cookie-parser`, `express-rate-limit`, `jsonwebtoken`, `bcrypt`, and `mongodb-memory-server` (tests only).
 
@@ -918,13 +932,13 @@ Dependencies beyond the required stack are limited to: `react-hook-form` and `@h
 
 Each phase ends with passing tests, an `IMPLEMENTATION_LOG.md` entry and a commit. If you supply a different phase breakdown, it replaces this one.
 
-| Phase                         | Deliverable                                                                                                                                                                                                                                                                                                           | Done when                                                                        |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| **0. Architecture**           | This document, implementation log, repository initialised                                                                                                                                                                                                                                                             | Reviewed and committed                                                           |
-| **1. Foundation and auth** ✓  | Monorepo and tooling; `shared` package; Express app with config, logging, request IDs, error handling, `/health`; local and Docker MongoDB replica set; login, refresh rotation, logout, change password, bootstrap admin, RBAC, user management; web shell (layout, sidebar, route guards, role-aware dashboard); CI | Auth, RBAC and route-guard tests pass (unit, integration, E2E)                   |
-| **2. Master data**            | Warehouses, categories, products, suppliers, customers: API, validation, list, detail and form pages, search and filters; workspace settings and audit log                                                                                                                                                            | CRUD tests pass; deactivation rules enforced                                     |
-| **3. Inventory core**         | `stockService`, stock levels, movement ledger, adjustments, transfers, stock levels and movements pages, low-stock list                                                                                                                                                                                               | Invariant and concurrency tests pass for adjustments and transfers               |
-| **4. Procurement**            | Purchase orders with approval, goods receipts (partial), average cost, incoming quantities, document numbering                                                                                                                                                                                                        | PO lifecycle tests pass, including over-receipt rejection and cost recalculation |
-| **5. Order fulfilment**       | Sales orders, reservations, shipments, cancellation and release, cost of goods shipped                                                                                                                                                                                                                                | Reservation race test passes; invariants hold                                    |
-| **6. Dashboard and reports**  | Dashboard, inventory valuation, purchasing summary, fulfilment summary, stock turnover                                                                                                                                                                                                                                | Report figures verified against seeded documents in tests                        |
-| **7. Hardening and delivery** | Seed data, Playwright E2E suite, full Docker stack, CI with E2E, accessibility and responsive pass, comprehensive README                                                                                                                                                                                              | E2E suite green in CI; fresh clone runs with documented commands                 |
+| Phase                                     | Deliverable                                                                                                                                                                                                                                                                                                           | Done when                                                                                    |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| **0. Architecture**                       | This document, implementation log, repository initialised                                                                                                                                                                                                                                                             | Reviewed and committed                                                                       |
+| **1. Foundation and auth** ✓              | Monorepo and tooling; `shared` package; Express app with config, logging, request IDs, error handling, `/health`; local and Docker MongoDB replica set; login, refresh rotation, logout, change password, bootstrap admin, RBAC, user management; web shell (layout, sidebar, route guards, role-aware dashboard); CI | Auth, RBAC and route-guard tests pass (unit, integration, E2E)                               |
+| **2. Master data and inventory engine** ✓ | Settings (company, currency); warehouses, categories, products (generated SKUs), suppliers, customers; stock levels, movement ledger, opening stock, adjustments (incl. stock counts), per-warehouse low-stock thresholds; list, detail and form pages with search, filters and pagination                            | SKU, stock calculation, consistency and concurrency tests pass; ledger always equals on-hand |
+| **3. Warehouse operations**               | Stock transfers (dispatch, receive), audit log                                                                                                                                                                                                                                                                        | Transfer invariant and concurrency tests pass                                                |
+| **4. Procurement**                        | Purchase orders with approval, goods receipts (partial), average cost, incoming quantities, document numbering                                                                                                                                                                                                        | PO lifecycle tests pass, including over-receipt rejection and cost recalculation             |
+| **5. Order fulfilment**                   | Sales orders, reservations, shipments, cancellation and release, cost of goods shipped                                                                                                                                                                                                                                | Reservation race test passes; invariants hold                                                |
+| **6. Dashboard and reports**              | Dashboard, inventory valuation, purchasing summary, fulfilment summary, stock turnover                                                                                                                                                                                                                                | Report figures verified against seeded documents in tests                                    |
+| **7. Hardening and delivery**             | Seed data, Playwright E2E suite, full Docker stack, CI with E2E, accessibility and responsive pass, comprehensive README                                                                                                                                                                                              | E2E suite green in CI; fresh clone runs with documented commands                             |

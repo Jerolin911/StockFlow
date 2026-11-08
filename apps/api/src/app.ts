@@ -9,7 +9,13 @@ import { pingDatabase } from './config/db.js';
 import { logger } from './config/logger.js';
 import { errorHandler, notFoundHandler } from './middleware/error-handler.js';
 import { createAuthRouter } from './modules/auth/auth.routes.js';
+import { createCategoriesRouter } from './modules/categories/categories.js';
+import { customers, suppliers } from './modules/partners/partners.js';
+import { createProductsRouter } from './modules/products/products.js';
+import { createSettingsRouter } from './modules/settings/settings.js';
+import { createStockRouter } from './modules/stock/stock.routes.js';
 import { createUsersRouter } from './modules/users/users.routes.js';
+import { createWarehousesRouter } from './modules/warehouses/warehouses.js';
 
 const REQUEST_ID_PATTERN = /^[\w-]{1,100}$/;
 
@@ -57,6 +63,13 @@ export function createApp(): Express {
   });
   api.use('/auth', createAuthRouter());
   api.use('/users', createUsersRouter());
+  api.use('/settings', createSettingsRouter());
+  api.use('/warehouses', createWarehousesRouter());
+  api.use('/categories', createCategoriesRouter());
+  api.use('/products', createProductsRouter());
+  api.use('/suppliers', suppliers.router());
+  api.use('/customers', customers.router());
+  api.use('/stock', createStockRouter());
 
   app.use('/api/v1', api);
   app.use(notFoundHandler);

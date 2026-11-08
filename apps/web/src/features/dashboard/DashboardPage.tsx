@@ -11,8 +11,79 @@ import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { StockBadge } from '@/components/StatusBadge';
 import { useCurrentUser } from '@/features/auth/auth-context';
+import { useStockLevels } from '@/features/stock/api';
 import { useUserStats } from '@/features/users/api';
+import { cn } from '@/lib/utils';
+
+function LowStockCard({ className }: { className: string }) {
+  const low = useStockLevels({ status: 'low', sort: 'available', pageSize: 6 });
+  const rows = low.data?.data ?? [];
+  const total = low.data?.meta.total ?? 0;
+
+  return (
+    <Card className={cn('gap-4', className)}>
+      <CardHeader>
+        <CardTitle>Low stock</CardTitle>
+        <CardDescription>
+          {low.data
+            ? total === 0
+              ? 'Every stocked product is above its threshold.'
+              : `${total} product–warehouse ${total === 1 ? 'combination is' : 'combinations are'} at or below the threshold.`
+            : 'Products at or below their threshold'}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        {low.isPending ? (
+          <div className="grid gap-2">
+            {Array.from({ length: 4 }, (_, i) => (
+              <Skeleton key={i} className="h-9 w-full" />
+            ))}
+          </div>
+        ) : low.isError ? (
+          <p className="text-destructive text-sm">Couldn't load low-stock items.</p>
+        ) : rows.length > 0 ? (
+          <ul className="divide-y rounded-md border">
+            {rows.map((level) => (
+              <li
+                key={level.id}
+                className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
+              >
+                <div className="min-w-0">
+                  <Link
+                    to={`/products/${level.product.id}`}
+                    className="block truncate font-medium hover:underline"
+                  >
+                    {level.product.name}
+                  </Link>
+                  <span className="text-muted-foreground font-mono text-xs">
+                    {level.product.sku} · {level.warehouse.code}
+                  </span>
+                </div>
+                <div className="flex shrink-0 items-center gap-3">
+                  <span className="tabular-nums">
+                    <span className="font-medium">{level.available}</span>
+                    <span className="text-muted-foreground"> / {level.reorderPoint}</span>
+                  </span>
+                  <StockBadge available={level.available} isLow={level.isLow} />
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {total > 0 ? (
+          <Button asChild variant="outline" size="sm" className="justify-self-start">
+            <Link to="/stock?status=low">
+              View all low stock
+              <ArrowRight />
+            </Link>
+          </Button>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
 
 const ACCESS_AREAS: { title: string; permissions: Permission[] }[] = [
   {
@@ -49,12 +120,15 @@ export function DashboardPage() {
         description={`Signed in as ${user.name} · ${ROLE_LABELS[user.role]}`}
       />
       <div className="grid gap-6 lg:grid-cols-3">
-        <AccessCard
-          role={user.role}
-          permissions={permissions}
-          className={isAdmin ? 'lg:col-span-2' : 'lg:col-span-3'}
-        />
-        {isAdmin ? <UsersCard /> : null}
+        <LowStockCard className="lg:col-span-2" />
+        {isAdmin ? (
+          <UsersCard />
+        ) : (
+          <AccessCard role={user.role} permissions={permissions} className="" />
+        )}
+        {isAdmin ? (
+          <AccessCard role={user.role} permissions={permissions} className="lg:col-span-3" />
+        ) : null}
       </div>
     </>
   );
@@ -75,13 +149,13 @@ function AccessCard({
   })).filter((area) => area.granted.length > 0);
 
   return (
-    <Card className={className}>
+    <Card className={cn('@container', className)}>
       <CardHeader>
         <CardTitle>Your access</CardTitle>
         <CardDescription>What the {ROLE_LABELS[role]} role can do</CardDescription>
       </CardHeader>
       <CardContent>
-        <dl className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+        <dl className="grid gap-x-8 gap-y-5 @lg:grid-cols-2 @3xl:grid-cols-3">
           {areas.map((area) => (
             <div key={area.title}>
               <dt className="text-sm font-medium">{area.title}</dt>
