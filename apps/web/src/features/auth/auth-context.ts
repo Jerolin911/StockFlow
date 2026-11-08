@@ -3,7 +3,7 @@ import type { LoginInput, Permission, UserDto } from '@stockflow/shared';
 
 export type AuthState =
   | { status: 'loading' }
-  | { status: 'anonymous'; reason?: 'expired' }
+  | { status: 'anonymous'; reason?: 'expired' | 'signed_out' }
   | { status: 'authenticated'; user: UserDto; permissions: Permission[] };
 
 export interface AuthContextValue {

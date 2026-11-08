@@ -21,6 +21,8 @@ import {
 } from './modules/purchasing/supplier-prices.js';
 import { createCustomerReturnsRouter } from './modules/returns/customer-returns.js';
 import { createSupplierReturnsRouter } from './modules/returns/supplier-returns.js';
+import { createNotificationsRouter } from './modules/notifications/notifications.js';
+import { createReportsRouter } from './modules/reports/routes.js';
 import { createSalesOrdersRouter } from './modules/sales/sales-orders.js';
 import { createShipmentsRouter } from './modules/sales/shipments.js';
 import { createSettingsRouter } from './modules/settings/settings.js';
@@ -97,6 +99,8 @@ export function createApp(): Express {
   api.use('/customer-returns', createCustomerReturnsRouter());
   api.use('/supplier-returns', createSupplierReturnsRouter());
   api.use('/warehouse-ops', createWarehouseOpsRouter());
+  api.use('/reports', createReportsRouter());
+  api.use('/notifications', createNotificationsRouter());
 
   app.use('/api/v1', api);
   app.use(notFoundHandler);

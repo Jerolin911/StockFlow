@@ -1,5 +1,7 @@
 import {
   ArrowLeftRight,
+  Bell,
+  ChartColumn,
   ClipboardCheck,
   PackageX,
   Repeat,
@@ -29,6 +31,8 @@ export interface NavItem {
   label: string;
   icon: LucideIcon;
   permission?: Permission;
+  /** Shown when the user has any of these. */
+  anyPermission?: Permission[];
   end?: boolean;
 }
 
@@ -38,7 +42,18 @@ export interface NavSection {
 }
 
 export const NAV_SECTIONS: NavSection[] = [
-  { items: [{ to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true }] },
+  {
+    items: [
+      { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
+      {
+        to: '/reports',
+        label: 'Analytics',
+        icon: ChartColumn,
+        anyPermission: ['reports:inventory', 'reports:purchasing', 'reports:fulfilment'],
+      },
+      { to: '/notifications', label: 'Notifications', icon: Bell },
+    ],
+  },
   {
     label: 'Inventory',
     items: [
@@ -90,7 +105,9 @@ export function visibleSections(permissions: readonly Permission[]): NavSection[
   return NAV_SECTIONS.map((section) => ({
     ...section,
     items: section.items.filter(
-      (item) => !item.permission || permissions.includes(item.permission),
+      (item) =>
+        (!item.permission || permissions.includes(item.permission)) &&
+        (!item.anyPermission || item.anyPermission.some((p) => permissions.includes(p))),
     ),
   })).filter((section) => section.items.length > 0);
 }

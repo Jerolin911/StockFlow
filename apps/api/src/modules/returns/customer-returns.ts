@@ -18,6 +18,7 @@ import { nextDocumentNumber } from '../../lib/counters.js';
 import { AppError, invalidState, notFound } from '../../lib/errors.js';
 import { escapeRegex, parseId, parseSort } from '../../lib/http.js';
 import { inTransaction } from '../../lib/transaction.js';
+import { notify } from '../notifications/notifications.js';
 import { authenticate, authorize, requireAuth } from '../../middleware/auth.js';
 import {
   historyDto,
@@ -213,6 +214,16 @@ export async function createCustomerReturn(input: CreateInput, actor: Actor): Pr
       ],
       { session },
     );
+    await notify(
+      { permissions: ['customerReturns:write'], exclude: actor.id },
+      {
+        type: 'return',
+        title: `${number} needs approval`,
+        body: `${order.customer.name}: ${units(total)} from ${order.number}`,
+        link: `/customer-returns/${id.toString()}`,
+      },
+      session,
+    );
     return id.toString();
   });
 }
@@ -267,6 +278,16 @@ async function closeWithoutGoods(
       session,
     );
     await ret.save({ session });
+    await notify(
+      { userIds: [ret.requestedBy._id], exclude: actor.id },
+      {
+        type: 'return',
+        title: `${ret.number} ${status}`,
+        body: reason,
+        link: `/customer-returns/${id}`,
+      },
+      session,
+    );
   });
 }
 
@@ -325,6 +346,16 @@ export async function receiveCustomerReturn(id: string, input: ReceiveInput, act
     ret.receivedBy = snapshot(actor);
     const note = `${units(received)} into ${warehouse.code} quarantine${short > 0 ? `; ${short} not sent back` : ''}${input.note ? `. ${input.note}` : ''}`;
     ret.history.push(historyEntry(actor, 'received', note));
+    await notify(
+      { userIds: [ret.requestedBy._id], exclude: actor.id },
+      {
+        type: 'return',
+        title: `${ret.number} received`,
+        body: note,
+        link: `/customer-returns/${id}`,
+      },
+      session,
+    );
     await releaseOrderLines(
       ret,
       (l) => l.quantity - l.receivedQuantity,
@@ -393,6 +424,16 @@ async function inspectReturn(id: string, input: InspectInput, actor: Actor) {
     ret.inspectedBy = snapshot(actor);
     const note = `${units(restocked)} restocked in ${warehouse.code}${isolated > 0 ? `, ${isolated} kept in quarantine` : ''}`;
     ret.history.push(historyEntry(actor, 'inspected', note));
+    await notify(
+      { userIds: [ret.requestedBy._id], exclude: actor.id },
+      {
+        type: 'return',
+        title: `${ret.number} inspected`,
+        body: note,
+        link: `/customer-returns/${id}`,
+      },
+      session,
+    );
     const order = await SalesOrder.findById(ret.salesOrder._id).session(session);
     if (order) {
       order.history.push(historyEntry(actor, 'return_inspected', `${ret.number}: ${note}`));
@@ -466,6 +507,15 @@ export function createCustomerReturnsRouter(): Router {
       if (!(await CustomerReturn.exists({ _id: id }))) throw notFound('Customer return');
       throw invalidState('Only returns awaiting approval can be approved');
     }
+    await notify(
+      { permissions: ['returns:process'], exclude: actor.id },
+      {
+        type: 'return',
+        title: `${updated.number} approved: expect goods back`,
+        body: `${updated.customer.name}; receive into quarantine when it arrives`,
+        link: `/customer-returns/${id}`,
+      },
+    );
     res.json({ data: await getCustomerReturn(id) });
   });
 

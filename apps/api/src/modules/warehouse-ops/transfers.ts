@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { Types, type FilterQuery } from 'mongoose';
+import { Types, type ClientSession, type FilterQuery } from 'mongoose';
 import {
   IN_TRANSIT_TRANSFER_STATUSES,
   TRANSFER_STATUS_LABELS,
@@ -18,6 +18,7 @@ import { nextDocumentNumber } from '../../lib/counters.js';
 import { AppError, forbidden, invalidState, notFound } from '../../lib/errors.js';
 import { escapeRegex, parseId, parseSort } from '../../lib/http.js';
 import { inTransaction } from '../../lib/transaction.js';
+import { notify } from '../notifications/notifications.js';
 import { authenticate, authorize, requireAuth } from '../../middleware/auth.js';
 import {
   dateFromIso,
@@ -169,6 +170,16 @@ export async function createTransfer(input: TransferInput, actor: Actor): Promis
       history: [historyEntry(actor, 'requested')],
     },
   ]);
+  const total = fields.lines.reduce((s, l) => s + l.quantity, 0);
+  await notify(
+    { permissions: ['transfers:approve'], exclude: actor.id },
+    {
+      type: 'transfer',
+      title: `${doc!.number} needs approval`,
+      body: `${total} units requested by ${actor.name}`,
+      link: `/stock/transfers/${doc!._id.toString()}`,
+    },
+  );
   return doc!._id.toString();
 }
 
@@ -199,9 +210,37 @@ async function transition(
   const updated = await StockTransfer.findOneAndUpdate(
     { _id: id, status: { $in: from } },
     { $set: set, $push: { history: entry } },
-  );
+  ).lean<TransferRecord>();
   if (!updated) await throwStateError(id, message);
+  return updated!;
 }
+
+/** Tells the requester and approver how their transfer is progressing. */
+const transferUpdate = (
+  t: {
+    _id: { toString(): string };
+    number: string;
+    requestedBy: { _id: unknown };
+    approvedBy?: { _id: unknown } | null;
+  },
+  actor: Actor,
+  title: string,
+  body: string,
+  session?: ClientSession,
+) =>
+  notify(
+    {
+      userIds: [String(t.requestedBy._id), t.approvedBy ? String(t.approvedBy._id) : null],
+      exclude: actor.id,
+    },
+    {
+      type: 'transfer',
+      title: `${t.number} ${title}`,
+      body,
+      link: `/stock/transfers/${t._id.toString()}`,
+    },
+    session,
+  );
 
 /**
  * Takes the dispatched quantities out of the source as TRANSFER_OUT movements. They are in
@@ -290,6 +329,13 @@ export async function dispatchTransfer(id: string, input: DispatchInput, actor: 
       ),
     );
     await t.save({ session });
+    await transferUpdate(
+      t,
+      actor,
+      'dispatched',
+      `${units(total)} left ${source.code} and are in transit`,
+      session,
+    );
   });
 }
 
@@ -373,6 +419,13 @@ export async function receiveTransfer(id: string, input: ReceiveInput, actor: Ac
       ),
     );
     await t.save({ session });
+    await transferUpdate(
+      t,
+      actor,
+      remaining === 0 ? 'received' : 'partly received',
+      `${units(good)} into ${destination.code}${damaged > 0 ? `, ${damaged} damaged` : ''}${remaining > 0 ? `; ${remaining} still in transit` : ''}`,
+      session,
+    );
   });
 }
 
@@ -463,6 +516,13 @@ async function closeTransfer(id: string, reason: string, actor: Actor) {
       ),
     );
     await t.save({ session });
+    await transferUpdate(
+      t,
+      actor,
+      'closed short',
+      `${units(lostTotal)} written off: ${reason}`,
+      session,
+    );
   });
 }
 
@@ -540,12 +600,18 @@ export function createTransfersRouter(): Router {
         throw invalidState('Someone other than the requester must approve this transfer');
       }
     }
-    await transition(
+    const approved = await transition(
       id,
       ['requested'],
       { status: 'approved', approvedBy: snapshot(actor), approvedAt: new Date() },
       historyEntry(actor, 'approved'),
       'Only transfers awaiting approval can be approved',
+    );
+    await transferUpdate(
+      approved,
+      actor,
+      'approved',
+      `Approved by ${actor.name}; ready to dispatch`,
     );
     res.json({ data: await getTransfer(id) });
   });
@@ -553,13 +619,15 @@ export function createTransfersRouter(): Router {
   router.post('/:id/reject', authorize('transfers:approve'), async (req, res) => {
     const id = parseId(req.params.id, 'Transfer');
     const { reason } = reasonBodySchema.parse(req.body);
-    await transition(
+    const actor = requireAuth(req).user;
+    const rejected = await transition(
       id,
       ['requested'],
       { status: 'rejected', rejectionReason: reason },
-      historyEntry(requireAuth(req).user, 'rejected', reason),
+      historyEntry(actor, 'rejected', reason),
       'Only transfers awaiting approval can be rejected',
     );
+    await transferUpdate(rejected, actor, 'rejected', reason);
     res.json({ data: await getTransfer(id) });
   });
 

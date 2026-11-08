@@ -15,6 +15,7 @@ import { nextDocumentNumber } from '../../lib/counters.js';
 import { AppError, invalidState, notFound } from '../../lib/errors.js';
 import { escapeRegex, parseId } from '../../lib/http.js';
 import { inTransaction } from '../../lib/transaction.js';
+import { notify } from '../notifications/notifications.js';
 import { authenticate, authorize, requireAuth } from '../../middleware/auth.js';
 import { applyMovement, updateAverageCost } from '../stock/stock.service.js';
 import { Warehouse } from '../warehouses/warehouse.model.js';
@@ -211,6 +212,16 @@ export async function postGoodsReceipt(input: ReceiptInput, actor: Actor): Promi
       ),
     );
     await po.save({ session });
+    await notify(
+      { userIds: [po.createdBy._id], permissions: ['purchaseOrders:write'], exclude: actor.id },
+      {
+        type: 'goods_receipt',
+        title: `${number} received against ${po.number}`,
+        body: `${po.supplier.name}: ${accepted} accepted${notAccepted > 0 ? `, ${notAccepted} rejected or damaged` : ''}${complete ? '; order complete' : ''}`,
+        link: `/goods-receipts/${receiptId.toString()}`,
+      },
+      session,
+    );
 
     await GoodsReceipt.create(
       [

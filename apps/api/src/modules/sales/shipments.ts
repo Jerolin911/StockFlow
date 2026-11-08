@@ -22,6 +22,7 @@ import { nextDocumentNumber } from '../../lib/counters.js';
 import { AppError, invalidState, notFound } from '../../lib/errors.js';
 import { escapeRegex, parseId, parseSort } from '../../lib/http.js';
 import { inTransaction } from '../../lib/transaction.js';
+import { notify } from '../notifications/notifications.js';
 import { authenticate, authorize, requireAuth } from '../../middleware/auth.js';
 import { Product } from '../products/product.model.js';
 import { applyMovement } from '../stock/stock.service.js';
@@ -273,6 +274,18 @@ export async function confirmPick(id: string, input: PickInput, actor: Actor) {
     order.history.push(historyEntry(actor, 'shipment_picked', `${shipment.number}: ${note}`));
     await shipment.save({ session });
     await order.save({ session });
+    if (short > 0) {
+      await notify(
+        { userIds: [order.createdBy._id], exclude: actor.id },
+        {
+          type: 'shipment',
+          title: `${shipment.number} short-picked`,
+          body: `${order.number}: ${note}`,
+          link: `/shipments/${shipment._id.toString()}`,
+        },
+        session,
+      );
+    }
   });
 }
 
@@ -357,6 +370,16 @@ export async function dispatch(id: string, input: DispatchInput, actor: Actor) {
     order.history.push(historyEntry(actor, 'shipment_dispatched', note));
     await shipment.save({ session });
     await order.save({ session });
+    await notify(
+      { userIds: [order.createdBy._id], exclude: actor.id },
+      {
+        type: 'shipment',
+        title: `${order.number} dispatched`,
+        body: `${order.customer.name}: ${note}`,
+        link: `/shipments/${shipment._id.toString()}`,
+      },
+      session,
+    );
   });
 }
 
@@ -412,6 +435,16 @@ export async function addTrackingEvent(id: string, input: TrackingInput, actor: 
     order.history.push(historyEntry(actor, 'shipment_delivered', `${shipment.number}: ${note}`));
     await shipment.save({ session });
     await order.save({ session });
+    await notify(
+      { userIds: [order.createdBy._id], exclude: actor.id },
+      {
+        type: 'shipment',
+        title: `${order.number} delivered`,
+        body: `${shipment.number} to ${order.customer.name}. ${note}`,
+        link: `/shipments/${shipment._id.toString()}`,
+      },
+      session,
+    );
   });
 }
 

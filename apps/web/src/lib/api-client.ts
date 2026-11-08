@@ -74,7 +74,8 @@ export interface RequestOptions {
   signal?: AbortSignal;
 }
 
-export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+/** Sends a request with the access token, refreshing it once on 401. */
+async function authorizedFetch(path: string, options: RequestOptions): Promise<Response> {
   const { method = 'GET', body, query, signal } = options;
 
   const params = new URLSearchParams();
@@ -113,6 +114,26 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   }
 
   if (!res.ok) throw await toApiError(res);
+  return res;
+}
+
+export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const res = await authorizedFetch(path, options);
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
+}
+
+/** Downloads a file endpoint (e.g. a CSV export) and saves it under the server's filename. */
+export async function apiDownload(path: string, query: RequestOptions['query']): Promise<void> {
+  const res = await authorizedFetch(path, { query });
+  const disposition = res.headers.get('Content-Disposition') ?? '';
+  const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? 'export.csv';
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }

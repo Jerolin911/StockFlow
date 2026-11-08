@@ -506,3 +506,97 @@ Delivered under roadmap phase 3 (Warehouse operations). Returns were out of scop
 - After signing in as a different user, the app can return to the previous session's page.
 - Transfers don't reserve stock at approval; availability is enforced at dispatch, so an approved transfer can be short if stock sells in between.
 - An orphaned Vite dev server from an earlier session is still running on port 5173; stopping it needs a manual `Stop-Process`.
+
+## Phase 6 — Dashboard, analytics and notifications (2026-11-08)
+
+Delivered under roadmap phase 6.
+
+### Completed
+
+- **Dashboard (`GET /reports/overview`):**
+  - Active and inactive products, units on hand, available and quarantined, and value for roles with `reports:inventory`.
+  - Low-stock and out-of-stock product × warehouse counts, and stock per warehouse.
+  - Pending and overdue purchase orders and units still due; drafts to confirm, orders awaiting fulfilment and shipments in transit.
+  - The last 10 movements.
+  - The page combines these with the fulfilment and warehouse-ops summaries in a "Pending work" list, all linking to filtered lists.
+- **Inventory analytics:** stock movement trend (usable units in and out), fast and slow movers by days of cover at the period's shipment rate (thresholds 30 and 90 days), warehouse distribution, availability (with incoming on POs and in transit), and category totals with units received and shipped.
+- **Procurement analytics:** purchase order trends (orders raised, value, units received); supplier performance (on-time rate, average days late, rejected or damaged rate, open and overdue orders); delivery history with days late; pending purchase quantities.
+- **Sales analytics:** order trends (confirmed, value, units shipped); top products by units with net revenue and cost; fulfilment statistics (created, confirmed, completed, cancelled, hours to first dispatch, days to delivery, on-time delivery, short picks, open orders and shipments by status); pending and completed orders.
+- **Filters and exports:**
+  - Every report takes a date range (default the last 30 days, at most 731) and warehouse, category, supplier or customer filters.
+  - Trends bucket by day, week or month by range length.
+  - Tables search and page. Every table and trend exports CSV (UTF-8 with BOM, quoted cells, formula-injection guard, 10,000-row cap).
+  - Permissions: `reports:inventory`, `reports:purchasing` and `reports:fulfilment`.
+- **Notifications:**
+  - Stored per user and created inside the posting transaction for: purchase request and order submission (approvers), approval and rejection (requester or creator), goods receipts, sales order confirmation (warehouse), short picks, dispatch, delivery, cancellations stopping a pick, transfer request, approval, rejection, dispatch, receipt and close, count submission and posting, and customer and supplier return steps.
+  - Low-stock alerts when available crosses the threshold downwards, by withdrawal or reservation.
+  - Endpoints: list with type and unread filters, summary (unread count plus approvals waiting for the caller, excluding their own documents), mark one read (owner only; keeps the first read time), mark all read.
+- **Web:**
+  - Dashboard redesign.
+  - Analytics with inventory, procurement and sales tabs by permission. Date presets and a custom range in the URL, carried between tabs.
+  - Hand-built charts using the validated reference palette (slots 1–2): column charts with hover and focus tooltips, legends, totals and a table view, plus horizontal bar lists.
+  - Paged report tables with search and CSV download.
+  - A notification bell (unread badge, approvals waiting, latest items, mark all read, polled every 30 s) and a notifications page.
+
+### Fixed or improved during this phase
+
+- Card titles are now `h2` headings (they were `div`s), so card sections appear in the page outline for screen readers.
+- After a deliberate sign-out, the next sign-in starts at the dashboard instead of the previous user's page. Expired sessions and deep links still return to where they were. This closes a pending issue from Phase 1.
+- A report tab the user can't open shows only the access-denied page, not the analytics header with a second `h1`.
+- `levelStages` now includes `avgCost`, which warehouse values need.
+
+### Changed files
+
+- `packages/shared/src/`: `schemas/reports.ts`, `dto-reports.ts`, `index.ts`
+- `apps/api/src/`:
+  - `modules/reports/{common,inventory,purchasing,sales,routes}.ts`
+  - `modules/notifications/notifications.ts`
+  - Notification hooks in `modules/purchasing/{purchase-requests,purchase-orders,goods-receipts}.ts`, `modules/sales/{sales-orders,shipments}.ts`, `modules/warehouse-ops/{transfers,stock-counts}.ts` and `modules/returns/{customer-returns,supplier-returns}.ts`
+  - `modules/stock/{stock.service,stock.queries}.ts` (low-stock alerts, avgCost in level stages)
+  - `app.ts`
+- `apps/api/tests/{reports,notifications}.test.ts`
+- `apps/web/src/`:
+  - `components/charts.tsx`, `components/ui/card.tsx`
+  - `features/reports/**`, `features/notifications/**`
+  - `features/dashboard/DashboardPage.tsx`
+  - `features/auth/{auth-context,AuthProvider,guards}.ts(x)`
+  - `lib/api-client.ts` (shared authorised fetch, `apiDownload`)
+  - `app/{router,navigation}.ts(x)`, `app/layout/AppShell.tsx`
+- `apps/web/e2e/analytics.spec.ts`
+- `docs/ARCHITECTURE.md`, `README.md`, `CLAUDE.md`
+
+### Test results
+
+- `packages/shared`: 21 unit tests passed.
+- `apps/api`: 157 integration tests passed, 14 of them new.
+  - Reports, checked against records the tests create with known figures:
+    - Overview counts, stock value, low and out-of-stock, warehouse split, pending work, recent movements; value withheld from staff.
+    - Movement trend by day with empty days at zero.
+    - Velocity classes over 30 and 7 days, and per warehouse.
+    - Availability with incoming and in-transit units; category totals.
+    - CSV header, row count, escaping and formula neutralising.
+    - Permission denials across all three areas; reversed and over-long ranges refused.
+    - Supplier on-time rate, average days late and issue rate.
+    - Delivery days late; pending lines; purchase trend.
+    - Top products with discounted revenue and cost; fulfilment statistics; sales trend; pending and completed orders.
+  - Notifications:
+    - Approvers asked and the creator told, never the actor; goods receipt update.
+    - Low-stock alert on crossing, including by reservation, with no repeat while low.
+    - Nothing left behind when an action rolls back; deactivated users skipped.
+    - Inbox filters; another user's notification is a 404; read keeps the first time; read-all.
+    - The approvals summary excludes the caller's own documents; authentication required.
+- `apps/web`: 6 unit tests passed.
+- Playwright: 36 E2E tests passed, 4 of them new:
+  - Dashboard tiles match the low-stock list and product counts.
+  - Inventory analytics date preset, chart table view, movement filter and CSV download (filename and header checked).
+  - Tabs by role: admin sees all three, sales only Sales, staff gets access denied.
+  - A transfer request notifies the inventory manager, who opens it from the bell. The unread count drops and "mark all as read" clears it.
+- `npm run lint`, `npm run typecheck`, `prettier --check` and `npm run build` pass.
+- Manual check in the browser against the seeded database: dashboard, all three analytics tabs and notifications, with figures cross-checked (for example, low stock is 4 in MAIN plus 1 in NORTH, matching the total of 5).
+
+### Pending issues
+
+- The `audit:read` permission and "View the audit log" label exist, but there is no audit log; document histories and the movement ledger are the only audit trail so far.
+- Docker images and CI are still unverified.
+- Notifications aren't pruned; a retention policy may be needed over time.
+- A low-stock notification describes the moment stock crossed the threshold; if a cancellation restores stock, the notification stays as a record of that event.

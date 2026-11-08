@@ -89,6 +89,16 @@ The demo password is `DEMO_PASSWORD` in [apps/api/scripts/seed-data.ts](apps/api
 - **Supplier returns:** from quarantine or usable stock, approved by procurement, then sent; stock leaves at dispatch.
 - **Corrections:** movements are never deleted. A posted adjustment is reversed by a new adjustment with the opposite quantities, linked both ways.
 
+## Dashboard, analytics and notifications
+
+- **Dashboard:** active products, units on hand (value for roles with inventory reports), low and out-of-stock counts, stock by warehouse, pending work across purchasing, sales, transfers and returns, recent movements and the low-stock list. Every figure is computed from the records when the page loads.
+- **Analytics** (`/reports`), by permission:
+  - Inventory: stock movement trend, fast- and slow-moving products by days of cover, stock by warehouse, availability (incl. incoming and in transit), categories.
+  - Procurement: purchase order trends, supplier delivery performance, pending purchase quantities, delivery history.
+  - Sales: fulfilment statistics, order trends, top-selling products, pending and completed orders.
+  - Date presets or a custom range (last 30 days by default), warehouse and partner filters kept in the URL; tables search, page and export to CSV.
+- **Notifications:** each user gets updates on the documents they're involved in (approvals needed, approvals given, receipts, dispatches, deliveries, transfers, returns, counts) and low-stock alerts when available stock crosses a threshold. The bell shows the unread count and approvals waiting for you.
+
 ## Checks
 
 ```bash

@@ -17,6 +17,7 @@ import { nextDocumentNumber } from '../../lib/counters.js';
 import { AppError, invalidState, notFound } from '../../lib/errors.js';
 import { escapeRegex, parseId, parseSort } from '../../lib/http.js';
 import { inTransaction } from '../../lib/transaction.js';
+import { notify } from '../notifications/notifications.js';
 import { authenticate, authorize, requireAuth } from '../../middleware/auth.js';
 import {
   historyDto,
@@ -151,6 +152,15 @@ export async function createSupplierReturn(input: CreateInput, actor: Actor): Pr
       history: [historyEntry(actor, 'requested', `${units(total)} from ${warehouse.code}`)],
     },
   ]);
+  await notify(
+    { permissions: ['supplierReturns:approve'], exclude: actor.id },
+    {
+      type: 'return',
+      title: `${doc!.number} needs approval`,
+      body: `${units(total)} back to ${supplier.name}`,
+      link: `/supplier-returns/${doc!._id.toString()}`,
+    },
+  );
   return doc!._id.toString();
 }
 
@@ -210,6 +220,16 @@ async function dispatchReturn(id: string, input: DispatchInput, actor: Actor) {
       ),
     );
     await ret.save({ session });
+    await notify(
+      { userIds: [ret.requestedBy._id], exclude: actor.id },
+      {
+        type: 'return',
+        title: `${ret.number} sent to ${ret.supplier.name}`,
+        body: `${units(total)}${input.reference ? `, reference ${input.reference}` : ''}`,
+        link: `/supplier-returns/${id}`,
+      },
+      session,
+    );
   });
 }
 
@@ -288,6 +308,15 @@ export function createSupplierReturnsRouter(): Router {
       { status: 'approved', approvedBy: snapshot(actor), approvedAt: new Date() },
       historyEntry(actor, 'approved'),
       'Only returns awaiting approval can be approved',
+    );
+    await notify(
+      { permissions: ['returns:process'], exclude: actor.id },
+      {
+        type: 'return',
+        title: 'Supplier return approved: ready to send',
+        body: `Approved by ${actor.name}`,
+        link: `/supplier-returns/${id}`,
+      },
     );
     res.json({ data: await getSupplierReturn(id) });
   });

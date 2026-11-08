@@ -18,6 +18,7 @@ import { nextDocumentNumber } from '../../lib/counters.js';
 import { AppError, invalidState, notFound } from '../../lib/errors.js';
 import { escapeRegex, parseId, parseSort } from '../../lib/http.js';
 import { inTransaction } from '../../lib/transaction.js';
+import { notify } from '../notifications/notifications.js';
 import { authenticate, authorize, requireAuth } from '../../middleware/auth.js';
 import {
   InsufficientStockError,
@@ -272,6 +273,16 @@ export async function confirmSalesOrder(id: string, actor: Actor): Promise<void>
       historyEntry(actor, 'confirmed', `Reserved ${units(reserved)} in ${warehouse.code}`),
     );
     await order.save({ session });
+    await notify(
+      { permissions: ['shipments:create'], exclude: actor.id },
+      {
+        type: 'sales_order',
+        title: `${order.number} ready to pick`,
+        body: `${order.customer.name}: ${units(reserved)} reserved in ${warehouse.code}`,
+        link: `/sales-orders/${order._id.toString()}`,
+      },
+      session,
+    );
   });
 }
 
@@ -333,13 +344,25 @@ export async function cancelSalesOrder(id: string, reason: string, actor: Actor)
       ),
     );
     await order.save({ session });
+    if (openShipments.length > 0) {
+      await notify(
+        { permissions: ['shipments:create'], exclude: actor.id },
+        {
+          type: 'shipment',
+          title: `Stop picking ${openShipments.map((s) => s.number).join(', ')}`,
+          body: `${order.number} was cancelled: ${reason}`,
+          link: `/sales-orders/${order._id.toString()}`,
+        },
+        session,
+      );
+    }
   });
 }
 
 const OPEN = { $in: [...OPEN_SALES_ORDER_STATUSES] };
 
 /** Matches open orders with at least one unit not yet on a shipment. */
-const hasUnallocated = {
+export const hasUnallocated = {
   $anyElementTrue: [
     {
       $map: {

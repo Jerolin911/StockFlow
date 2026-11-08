@@ -16,6 +16,7 @@ import { nextDocumentNumber } from '../../lib/counters.js';
 import { invalidState, notFound } from '../../lib/errors.js';
 import { escapeRegex, parseId, parseSort } from '../../lib/http.js';
 import { inTransaction } from '../../lib/transaction.js';
+import { notify } from '../notifications/notifications.js';
 import { authenticate, authorize, requireAuth } from '../../middleware/auth.js';
 import {
   dateFromIso,
@@ -324,12 +325,22 @@ export function createPurchaseOrdersRouter(): Router {
 
   router.post('/:id/submit', authorize('purchaseOrders:write'), async (req, res) => {
     const id = parseId(req.params.id, 'Purchase order');
-    await transition(
+    const actor = requireAuth(req).user;
+    const po = await transition(
       id,
       { status: 'draft' },
       { status: 'pending_approval', rejectionReason: '' },
-      historyEntry(requireAuth(req).user, 'submitted'),
+      historyEntry(actor, 'submitted'),
       'Only draft purchase orders can be submitted',
+    );
+    await notify(
+      { permissions: ['purchaseOrders:approve'], exclude: actor.id },
+      {
+        type: 'purchase_order',
+        title: `${po.number} needs approval`,
+        body: `${po.supplier.name}, submitted by ${actor.name}`,
+        link: `/purchase-orders/${id}`,
+      },
     );
     res.json({ data: await getPurchaseOrder(id) });
   });
@@ -346,12 +357,21 @@ export function createPurchaseOrdersRouter(): Router {
         throw invalidState('Someone other than the creator must approve this purchase order');
       }
     }
-    await transition(
+    const po = await transition(
       id,
       { status: 'pending_approval' },
       { status: 'approved', approvedBy: snapshot(actor), approvedAt: new Date() },
       historyEntry(actor, 'approved'),
       'Only purchase orders awaiting approval can be approved',
+    );
+    await notify(
+      { userIds: [po.createdBy._id], exclude: actor.id },
+      {
+        type: 'purchase_order',
+        title: `${po.number} approved`,
+        body: `${po.supplier.name}, approved by ${actor.name}`,
+        link: `/purchase-orders/${id}`,
+      },
     );
     res.json({ data: await getPurchaseOrder(id) });
   });
@@ -359,12 +379,22 @@ export function createPurchaseOrdersRouter(): Router {
   router.post('/:id/reject', authorize('purchaseOrders:approve'), async (req, res) => {
     const id = parseId(req.params.id, 'Purchase order');
     const { reason } = reasonBodySchema.parse(req.body);
-    await transition(
+    const actor = requireAuth(req).user;
+    const po = await transition(
       id,
       { status: 'pending_approval' },
       { status: 'draft', rejectionReason: reason },
-      historyEntry(requireAuth(req).user, 'rejected', reason),
+      historyEntry(actor, 'rejected', reason),
       'Only purchase orders awaiting approval can be rejected',
+    );
+    await notify(
+      { userIds: [po.createdBy._id], exclude: actor.id },
+      {
+        type: 'purchase_order',
+        title: `${po.number} returned for changes`,
+        body: reason,
+        link: `/purchase-orders/${id}`,
+      },
     );
     res.json({ data: await getPurchaseOrder(id) });
   });
@@ -383,6 +413,16 @@ export function createPurchaseOrdersRouter(): Router {
         session,
       );
       await releaseRequest(po, actor, session);
+      await notify(
+        { userIds: [po.createdBy._id], exclude: actor.id },
+        {
+          type: 'purchase_order',
+          title: `${po.number} cancelled`,
+          body: reason,
+          link: `/purchase-orders/${id}`,
+        },
+        session,
+      );
     });
     res.json({ data: await getPurchaseOrder(id) });
   });

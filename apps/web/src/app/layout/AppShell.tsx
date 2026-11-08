@@ -10,6 +10,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
+import { NotificationBell } from '@/features/notifications/NotificationBell';
 import { SidebarNav } from './SidebarNav';
 import { UserMenu } from './UserMenu';
 
@@ -62,7 +63,8 @@ export function AppShell() {
           <Link to="/" className="lg:hidden" aria-label="StockFlow dashboard">
             <Logo />
           </Link>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-1">
+            <NotificationBell />
             <UserMenu />
           </div>
         </header>

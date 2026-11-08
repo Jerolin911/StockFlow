@@ -1,6 +1,8 @@
 import type { ClientSession, Types } from 'mongoose';
 import type { MovementReferenceType, MovementType, StockBucket } from '@stockflow/shared';
+import { notify } from '../notifications/notifications.js';
 import { Product } from '../products/product.model.js';
+import { Warehouse } from '../warehouses/warehouse.model.js';
 import { StockLevel } from './stock-level.model.js';
 import { StockMovement } from './stock-movement.model.js';
 
@@ -86,6 +88,11 @@ export async function applyMovement(input: MovementInput, session: ClientSession
     }
   }
 
+  if (bucket === 'usable' && input.quantity < 0 && !input.fromReserved) {
+    const after = level.onHand - level.reserved;
+    await alertIfLow(input.productId, input.warehouseId, after - input.quantity, after, session);
+  }
+
   const balanceAfter = level[field];
   await StockMovement.create(
     [
@@ -153,15 +160,51 @@ export async function reserveStock(
     throw new Error('Reservation quantity must be a positive integer');
   }
   const key = { productId, warehouseId };
-  const result = await StockLevel.updateOne(
+  const level = await StockLevel.findOneAndUpdate(
     { ...key, $expr: { $gte: [{ $subtract: ['$onHand', '$reserved'] }, quantity] } },
     { $inc: { reserved: quantity } },
-    { session },
-  );
-  if (result.modifiedCount === 0) {
+    { new: true, session },
+  ).lean();
+  if (!level) {
     const current = await StockLevel.findOne(key).session(session).lean();
     throw new InsufficientStockError(productId, current ? current.onHand - current.reserved : 0);
   }
+  const after = level.onHand - level.reserved;
+  await alertIfLow(productId, warehouseId, after + quantity, after, session);
+}
+
+/**
+ * Notifies inventory and procurement when available stock drops to or below the threshold
+ * (the warehouse override, else the product's). Only the crossing alerts, not every
+ * withdrawal while already low, and only in active warehouses.
+ */
+async function alertIfLow(
+  productId: Types.ObjectId,
+  warehouseId: Types.ObjectId,
+  before: number,
+  after: number,
+  session: ClientSession,
+) {
+  const [product, level, warehouse] = await Promise.all([
+    Product.findById(productId, { sku: 1, name: 1, unit: 1, reorderPoint: 1 })
+      .session(session)
+      .lean(),
+    StockLevel.findOne({ productId, warehouseId }, { reorderPoint: 1 }).session(session).lean(),
+    Warehouse.findById(warehouseId, { code: 1, isActive: 1 }).session(session).lean(),
+  ]);
+  if (!product || !warehouse?.isActive) return;
+  const threshold = level?.reorderPoint ?? product.reorderPoint;
+  if (threshold <= 0 || before <= threshold || after > threshold) return;
+  await notify(
+    { permissions: ['stock:adjust', 'purchaseOrders:write'] },
+    {
+      type: 'low_stock',
+      title: `${after <= 0 ? 'Out of stock' : 'Low stock'}: ${product.sku} at ${warehouse.code}`,
+      body: `${product.name}: ${Math.max(after, 0)} ${product.unit} available, threshold ${threshold}`,
+      link: `/products/${productId.toString()}`,
+    },
+    session,
+  );
 }
 
 /** Returns reserved units to available stock when an order or its remainder is cancelled. */

@@ -29,6 +29,55 @@ export const router = createBrowserRouter([
         children: [
           { index: true, element: <DashboardPage /> },
           {
+            path: '/reports',
+            lazy: page(() => import('@/features/reports/ReportsLayout'), 'ReportsLayout'),
+            children: [
+              {
+                element: <RequirePermission permission="reports:inventory" />,
+                children: [
+                  {
+                    path: 'inventory',
+                    lazy: page(
+                      () => import('@/features/reports/InventoryReportsPage'),
+                      'InventoryReportsPage',
+                    ),
+                  },
+                ],
+              },
+              {
+                element: <RequirePermission permission="reports:purchasing" />,
+                children: [
+                  {
+                    path: 'purchasing',
+                    lazy: page(
+                      () => import('@/features/reports/PurchasingReportsPage'),
+                      'PurchasingReportsPage',
+                    ),
+                  },
+                ],
+              },
+              {
+                element: <RequirePermission permission="reports:fulfilment" />,
+                children: [
+                  {
+                    path: 'sales',
+                    lazy: page(
+                      () => import('@/features/reports/SalesReportsPage'),
+                      'SalesReportsPage',
+                    ),
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            path: '/notifications',
+            lazy: page(
+              () => import('@/features/notifications/NotificationsPage'),
+              'NotificationsPage',
+            ),
+          },
+          {
             path: '/products',
             lazy: page(() => import('@/features/catalog/ProductsPage'), 'ProductsPage'),
           },

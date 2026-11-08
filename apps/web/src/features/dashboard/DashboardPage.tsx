@@ -4,19 +4,23 @@ import {
   PERMISSION_LABELS,
   ROLE_LABELS,
   ROLES,
+  type OverviewDto,
   type Permission,
   type Role,
 } from '@stockflow/shared';
+import { BarList, StatTile, formatCount } from '@/components/charts';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { StockBadge } from '@/components/StatusBadge';
 import { useCurrentUser } from '@/features/auth/auth-context';
-import { usePurchaseOrders, usePurchaseRequests } from '@/features/purchasing/api';
 import { useFulfilmentSummary } from '@/features/sales/api';
 import { useWarehouseOpsSummary } from '@/features/warehouse/api';
+import { useOverview } from '@/features/reports/api';
+import { useMoney } from '@/features/settings/api';
 import { useStockLevels } from '@/features/stock/api';
+import { MovementsTable } from '@/features/stock/MovementsTable';
 import { useUserStats } from '@/features/users/api';
 import { cn } from '@/lib/utils';
 
@@ -135,11 +139,9 @@ const ACCESS_AREAS: { title: string; permissions: Permission[] }[] = [
 export function DashboardPage() {
   const { user, permissions } = useCurrentUser();
   const isAdmin = permissions.includes('users:manage');
-  // Roles that work orders and shipments see fulfilment first.
-  const salesFirst =
-    !isAdmin &&
-    (permissions.includes('salesOrders:write') || permissions.includes('shipments:create')) &&
-    !permissions.includes('purchaseOrders:write');
+  const overview = useOverview();
+  const money = useMoney();
+  const o = overview.data;
 
   return (
     <>
@@ -147,31 +149,205 @@ export function DashboardPage() {
         title="Dashboard"
         description={`Signed in as ${user.name} · ${ROLE_LABELS[user.role]}`}
       />
-      {salesFirst ? (
-        <>
-          <FulfilmentTiles />
-          <WarehouseTiles />
-          <PurchasingTiles />
-        </>
-      ) : (
-        <>
-          <PurchasingTiles />
-          <FulfilmentTiles />
-          <WarehouseTiles />
-        </>
-      )}
-      <div className="grid gap-6 lg:grid-cols-3">
-        <LowStockCard className="lg:col-span-2" />
-        {isAdmin ? (
-          <UsersCard />
+      <section aria-label="Key figures" className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {o ? (
+          <>
+            <StatTile
+              label="Active products"
+              value={formatCount(o.products.active)}
+              detail={
+                o.products.inactive > 0
+                  ? `${formatCount(o.products.inactive)} inactive`
+                  : 'None inactive'
+              }
+              to="/products"
+            />
+            <StatTile
+              label="Units on hand"
+              value={formatCount(o.stock.onHand)}
+              detail={`${formatCount(o.stock.available)} available · ${formatCount(o.stock.quarantine)} quarantined${o.stock.value !== null ? ` · ${money(o.stock.value)}` : ''}`}
+              to="/stock"
+            />
+            <StatTile
+              label="Low stock"
+              value={formatCount(o.lowStock)}
+              detail="Product–warehouse combinations at or below threshold"
+              to="/stock?status=low"
+              alert={o.lowStock > 0}
+            />
+            <StatTile
+              label="Out of stock"
+              value={formatCount(o.outOfStock)}
+              detail="Held in a warehouse with nothing available"
+              to="/stock?status=out"
+              alert={o.outOfStock > 0}
+            />
+          </>
         ) : (
-          <AccessCard role={user.role} permissions={permissions} className="" />
+          Array.from({ length: 4 }, (_, i) => (
+            <Skeleton key={i} className="h-[104px] w-full rounded-xl" />
+          ))
         )}
-        {isAdmin ? (
-          <AccessCard role={user.role} permissions={permissions} className="lg:col-span-3" />
-        ) : null}
+      </section>
+
+      <div className="mb-6 grid gap-6 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>Warehouse distribution</CardTitle>
+            <CardDescription>Usable units on hand in each warehouse.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {o ? (
+              <BarList
+                label="Units on hand by warehouse"
+                rows={o.warehouses.map((w) => ({
+                  key: w.warehouse.id,
+                  label: (
+                    <>
+                      <span className="font-mono text-xs">{w.warehouse.code}</span>{' '}
+                      {w.warehouse.name}
+                      {!w.warehouse.isActive ? (
+                        <span className="text-muted-foreground"> (inactive)</span>
+                      ) : null}
+                    </>
+                  ),
+                  value: w.onHand,
+                  detail: `${w.skus} products · ${formatCount(w.reserved)} reserved · ${w.lowStock} low · ${w.outOfStock} out${w.value !== null ? ` · ${money(w.value)}` : ''}`,
+                }))}
+              />
+            ) : (
+              <Skeleton className="h-40 w-full" />
+            )}
+          </CardContent>
+        </Card>
+        <PendingWorkCard overview={o} />
+      </div>
+
+      <div className="mb-6 grid gap-6 lg:grid-cols-3">
+        <Card className="gap-0 overflow-hidden pb-0 lg:col-span-2">
+          <CardHeader className="pb-4">
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle>Recent inventory movements</CardTitle>
+              <Button asChild variant="ghost" size="sm">
+                <Link to="/stock/movements">
+                  All movements
+                  <ArrowRight />
+                </Link>
+              </Button>
+            </div>
+          </CardHeader>
+          <MovementsTable
+            rows={o?.recentMovements ?? []}
+            isPending={overview.isPending}
+            isError={overview.isError}
+            onRetry={() => void overview.refetch()}
+            emptyMessage="No stock movements yet."
+          />
+        </Card>
+        <LowStockCard className="" />
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-3">
+        {isAdmin ? <UsersCard /> : null}
+        <AccessCard
+          role={user.role}
+          permissions={permissions}
+          className={isAdmin ? 'lg:col-span-2' : 'lg:col-span-3'}
+        />
       </div>
     </>
+  );
+}
+
+/** Operational queues, each linking to the list that works it. */
+function PendingWorkCard({ overview: o }: { overview: OverviewDto | undefined }) {
+  const fulfilment = useFulfilmentSummary().data;
+  const ops = useWarehouseOpsSummary().data;
+  const items: { label: string; value: number | undefined; to: string; alert?: boolean }[] = [
+    {
+      label: 'Purchase orders awaiting approval',
+      value: o?.purchasing.pendingApproval,
+      to: '/purchase-orders?status=pending_approval',
+    },
+    { label: 'Open purchase orders', value: o?.purchasing.open, to: '/purchase-orders?open=true' },
+    {
+      label: 'Overdue deliveries',
+      value: o?.purchasing.overdue,
+      to: '/purchase-orders?overdue=true',
+      alert: true,
+    },
+    {
+      label: 'Units still due from suppliers',
+      value: o?.purchasing.pendingUnits,
+      to: '/purchase-orders?open=true',
+    },
+    {
+      label: 'Sales orders to confirm',
+      value: o?.sales.toConfirm,
+      to: '/sales-orders?status=draft',
+    },
+    {
+      label: 'Orders awaiting fulfilment',
+      value: o?.sales.awaitingFulfilment,
+      to: '/sales-orders?view=toFulfil',
+    },
+    {
+      label: 'Shipments to pick, pack or dispatch',
+      value: fulfilment
+        ? fulfilment.shipmentsToPick + fulfilment.shipmentsToPack + fulfilment.shipmentsToDispatch
+        : undefined,
+      to: '/shipments?view=pending',
+    },
+    { label: 'Shipments on the way', value: o?.sales.inTransit, to: '/shipments?view=inTransit' },
+    {
+      label: 'Transfers to approve or dispatch',
+      value: ops ? ops.transfersToApprove + ops.transfersToDispatch : undefined,
+      to: '/stock/transfers?status=requested',
+    },
+    {
+      label: 'Transfers in transit',
+      value: ops?.transfersInTransit,
+      to: '/stock/transfers?inTransit=true',
+    },
+    {
+      label: 'Returns to approve, receive or inspect',
+      value: ops ? ops.returnsToApprove + ops.returnsToReceive + ops.returnsToInspect : undefined,
+      to: '/customer-returns',
+    },
+  ];
+  return (
+    <Card className="gap-4">
+      <CardHeader>
+        <CardTitle>Pending work</CardTitle>
+        <CardDescription>Open documents across the business.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ul className="divide-y">
+          {items.map((item) => (
+            <li key={item.label}>
+              <Link
+                to={item.to}
+                className="hover:bg-muted/50 -mx-2 flex items-center justify-between gap-3 rounded-md px-2 py-1.5 text-sm"
+              >
+                <span className="text-muted-foreground">{item.label}</span>
+                {item.value === undefined ? (
+                  <Skeleton className="h-4 w-6" />
+                ) : (
+                  <span
+                    className={cn(
+                      'font-medium tabular-nums',
+                      item.alert && item.value > 0 && 'text-red-700',
+                    )}
+                  >
+                    {formatCount(item.value)}
+                  </span>
+                )}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -265,134 +441,5 @@ function UsersCard() {
         </Button>
       </CardContent>
     </Card>
-  );
-}
-
-function PurchasingTiles() {
-  const requests = usePurchaseRequests({ status: 'submitted', pageSize: 1 });
-  const approvals = usePurchaseOrders({ status: 'pending_approval', pageSize: 1 });
-  const open = usePurchaseOrders({ open: 'true', pageSize: 1 });
-  const overdue = usePurchaseOrders({ overdue: 'true', pageSize: 1 });
-
-  return (
-    <Tiles
-      label="Purchasing"
-      tiles={[
-        {
-          label: 'Requests awaiting approval',
-          total: requests.data?.meta.total,
-          to: '/purchase-requests?status=submitted',
-        },
-        {
-          label: 'Orders awaiting approval',
-          total: approvals.data?.meta.total,
-          to: '/purchase-orders?status=pending_approval',
-        },
-        {
-          label: 'Open purchase orders',
-          total: open.data?.meta.total,
-          to: '/purchase-orders?open=true',
-        },
-        {
-          label: 'Overdue deliveries',
-          total: overdue.data?.meta.total,
-          to: '/purchase-orders?overdue=true',
-          alert: true,
-        },
-      ]}
-    />
-  );
-}
-
-function FulfilmentTiles() {
-  const summary = useFulfilmentSummary();
-  const s = summary.data;
-  return (
-    <Tiles
-      label="Fulfilment"
-      tiles={[
-        {
-          label: 'Sales orders to confirm',
-          total: s?.ordersToConfirm,
-          to: '/sales-orders?status=draft',
-        },
-        {
-          label: 'Orders waiting for a pick list',
-          total: s?.ordersToFulfil,
-          to: '/sales-orders?view=toFulfil',
-        },
-        {
-          label: 'Shipments to pick, pack or dispatch',
-          total: s ? s.shipmentsToPick + s.shipmentsToPack + s.shipmentsToDispatch : undefined,
-          to: '/shipments?view=pending',
-        },
-        {
-          label: 'Shipments on the way',
-          total: s?.shipmentsInTransit,
-          to: '/shipments?view=inTransit',
-        },
-      ]}
-    />
-  );
-}
-
-function WarehouseTiles() {
-  const s = useWarehouseOpsSummary().data;
-  return (
-    <Tiles
-      label="Warehouse operations"
-      tiles={[
-        {
-          label: 'Transfers to approve or dispatch',
-          total: s ? s.transfersToApprove + s.transfersToDispatch : undefined,
-          to: '/stock/transfers?status=requested',
-        },
-        {
-          label: 'Transfers in transit',
-          total: s?.transfersInTransit,
-          to: '/stock/transfers?inTransit=true',
-        },
-        {
-          label: 'Returns to approve, receive or inspect',
-          total: s ? s.returnsToApprove + s.returnsToReceive + s.returnsToInspect : undefined,
-          to: '/customer-returns',
-        },
-        { label: 'Units in quarantine', total: s?.quarantinedUnits, to: '/stock/quarantine' },
-      ]}
-    />
-  );
-}
-
-function Tiles({
-  label,
-  tiles,
-}: {
-  label: string;
-  tiles: { label: string; total: number | undefined; to: string; alert?: boolean }[];
-}) {
-  return (
-    <section aria-label={label} className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      {tiles.map((tile) => (
-        <Link
-          key={tile.label}
-          to={tile.to}
-          className="bg-card hover:border-primary/40 focus-visible:ring-ring/50 rounded-xl border px-4 py-4 shadow-xs outline-none focus-visible:ring-[3px]"
-        >
-          <p className="text-muted-foreground text-sm">{tile.label}</p>
-          {tile.total === undefined ? (
-            <Skeleton className="mt-2 h-7 w-12" />
-          ) : (
-            <p
-              className={cn(
-                'mt-1 text-2xl font-semibold tabular-nums',
-                tile.alert && tile.total > 0 && 'text-red-700',
-              )}
-            >
-              {tile.total}
-            </p>
-          )}
-        </Link>
-      ))}
-    </section>
   );
 }

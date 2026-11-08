@@ -16,6 +16,7 @@ import { nextDocumentNumber } from '../../lib/counters.js';
 import { AppError, invalidState, isDuplicateKeyError, notFound } from '../../lib/errors.js';
 import { parseId } from '../../lib/http.js';
 import { inTransaction } from '../../lib/transaction.js';
+import { notify } from '../notifications/notifications.js';
 import { authenticate, authorize, requireAuth } from '../../middleware/auth.js';
 import { Category } from '../categories/categories.js';
 import {
@@ -333,6 +334,19 @@ async function postStockCount(id: string, input: PostInput, actor: Actor) {
       ),
     );
     await count.save({ session });
+    await notify(
+      { userIds: [count.createdBy._id, count.submittedBy?._id], exclude: actor.id },
+      {
+        type: 'stock_count',
+        title: `${count.number} posted`,
+        body:
+          changed.length === 0
+            ? 'No variances'
+            : `${changed.length} variance${changed.length === 1 ? '' : 's'} adjusted in ${count.adjustment!.number}`,
+        link: `/stock/counts/${count._id.toString()}`,
+      },
+      session,
+    );
   });
 }
 
@@ -415,6 +429,15 @@ export function createStockCountsRouter(): Router {
       { status: 'submitted', submittedBy: snapshot(actor) },
       historyEntry(actor, 'submitted'),
       'Only counts in progress can be submitted',
+    );
+    await notify(
+      { permissions: ['stock:adjust'], exclude: actor.id },
+      {
+        type: 'stock_count',
+        title: `Stock count ready to post`,
+        body: `Submitted by ${actor.name}; review the variances`,
+        link: `/stock/counts/${id}`,
+      },
     );
     res.json({ data: await getStockCount(id) });
   });

@@ -16,3 +16,5 @@ export * from './schemas/sales.js';
 export * from './dto-warehouse.js';
 export * from './schemas/warehouse-ops.js';
 export * from './schemas/returns.js';
+export * from './dto-reports.js';
+export * from './schemas/reports.js';

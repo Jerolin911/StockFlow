@@ -14,6 +14,7 @@ import { nextDocumentNumber } from '../../lib/counters.js';
 import { forbidden, invalidState, notFound } from '../../lib/errors.js';
 import { escapeRegex, parseId } from '../../lib/http.js';
 import { inTransaction } from '../../lib/transaction.js';
+import { notify } from '../notifications/notifications.js';
 import { authenticate, authorize, requireAuth } from '../../middleware/auth.js';
 import { Warehouse } from '../warehouses/warehouse.model.js';
 import {
@@ -223,6 +224,15 @@ export function createPurchaseRequestsRouter(): Router {
       historyEntry(actor, 'submitted'),
       'Only draft purchase requests can be submitted',
     );
+    await notify(
+      { permissions: ['purchaseRequests:approve'], exclude: actor.id },
+      {
+        type: 'purchase_request',
+        title: `${pr.number} needs approval`,
+        body: `Requested by ${actor.name}`,
+        link: `/purchase-requests/${id}`,
+      },
+    );
     res.json({ data: await toDto(pr) });
   });
 
@@ -240,6 +250,15 @@ export function createPurchaseRequestsRouter(): Router {
       historyEntry(actor, 'approved'),
       'Only submitted purchase requests can be approved',
     );
+    await notify(
+      { userIds: [pr.requestedBy._id], exclude: actor.id },
+      {
+        type: 'purchase_request',
+        title: `${pr.number} approved`,
+        body: `Approved by ${actor.name}`,
+        link: `/purchase-requests/${id}`,
+      },
+    );
     res.json({ data: await toDto(pr) });
   });
 
@@ -252,6 +271,15 @@ export function createPurchaseRequestsRouter(): Router {
       { status: 'rejected', rejectionReason: reason },
       historyEntry(requireAuth(req).user, 'rejected', reason),
       'Only submitted purchase requests can be rejected',
+    );
+    await notify(
+      { userIds: [pr.requestedBy._id], exclude: requireAuth(req).user.id },
+      {
+        type: 'purchase_request',
+        title: `${pr.number} rejected`,
+        body: reason,
+        link: `/purchase-requests/${id}`,
+      },
     );
     res.json({ data: await toDto(pr) });
   });
@@ -310,6 +338,16 @@ export function createPurchaseRequestsRouter(): Router {
       );
       if (updated.modifiedCount !== 1)
         throw invalidState('This purchase request changed. Try again.');
+      await notify(
+        { userIds: [pr.requestedBy._id], exclude: actor.id },
+        {
+          type: 'purchase_request',
+          title: `${pr.number} ordered`,
+          body: `Purchase order ${po!.number} raised by ${actor.name}`,
+          link: `/purchase-orders/${poId}`,
+        },
+        session,
+      );
       return poId;
     });
 

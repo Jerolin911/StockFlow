@@ -48,7 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       setAccessToken(null);
       queryClient.clear();
-      setState({ status: 'anonymous' });
+      setState({ status: 'anonymous', reason: 'signed_out' });
     }
   }, [queryClient]);
 

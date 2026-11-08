@@ -14,6 +14,9 @@ export function RequireAuth() {
 
   if (state.status === 'loading') return <FullPageLoader />;
   if (state.status === 'anonymous') {
+    // After a deliberate sign-out the next person starts at the dashboard, not on the
+    // previous user's page; expired sessions and deep links return where they were.
+    if (state.reason === 'signed_out') return <Navigate to="/login" replace />;
     const from = `${location.pathname}${location.search}`;
     return <Navigate to="/login" replace state={{ from } satisfies LoginRedirectState} />;
   }

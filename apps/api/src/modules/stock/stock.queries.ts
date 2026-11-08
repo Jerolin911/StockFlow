@@ -72,7 +72,7 @@ const LEVEL_SORT: Record<string, string> = {
   available: 'available',
 };
 
-function levelStages(match: FilterQuery<unknown>): PipelineStage[] {
+export function levelStages(match: FilterQuery<unknown>): PipelineStage[] {
   return [
     { $match: match },
     {
@@ -82,7 +82,17 @@ function levelStages(match: FilterQuery<unknown>): PipelineStage[] {
         foreignField: '_id',
         as: 'product',
         pipeline: [
-          { $project: { sku: 1, name: 1, unit: 1, isActive: 1, categoryId: 1, reorderPoint: 1 } },
+          {
+            $project: {
+              sku: 1,
+              name: 1,
+              unit: 1,
+              isActive: 1,
+              categoryId: 1,
+              reorderPoint: 1,
+              avgCost: 1,
+            },
+          },
         ],
       },
     },
