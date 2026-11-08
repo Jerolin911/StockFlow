@@ -1,6 +1,6 @@
 # StockFlow Architecture
 
-StockFlow is an inventory, procurement and order management system for one business workspace with multiple users and warehouses.
+StockFlow is an inventory, procurement, warehouse operations and order fulfilment system for one business workspace with multiple users and warehouses.
 
 Contents
 
@@ -25,24 +25,23 @@ Contents
 | Area | In scope |
 |---|---|
 | Workspace | One company: company profile, currency, tax defaults, document number prefixes |
-| Users | Email/password accounts created by an admin; six fixed roles |
+| Users | Email/password accounts created by an admin; five fixed roles |
 | Warehouses | Multiple stock locations; stock tracked per product per warehouse |
 | Catalogue | Categories and products (SKU, unit, prices, tax rate, reorder point) |
 | Inventory | Stock levels, movement ledger, stock adjustments, inter-warehouse transfers, low-stock list, valuation |
-| Procurement | Suppliers, purchase orders with approval, goods receipts (partial), supplier invoices |
-| Sales | Customers, sales orders with stock reservation, shipments (partial), customer invoices |
-| Payments | Manually recorded incoming and outgoing payments against invoices; voiding |
-| Reporting | Dashboard, inventory valuation, sales and purchase summaries, receivables and payables aging |
+| Procurement | Suppliers, purchase orders with approval, goods receipts (partial) |
+| Order fulfilment | Customers, sales orders with stock reservation, shipments (partial) |
+| Reporting | Dashboard, inventory valuation, purchasing and fulfilment summaries |
 | Audit | Log of who changed what and when |
 
 ### 1.2 Out of scope
 
 These are excluded on purpose to keep the system focused:
 
+- **Financial operations.** Supplier invoices, customer invoices, payment records, payment status tracking, reimbursement workflows and payment gateways. Order documents carry prices and totals so order values can be reported, but StockFlow does not bill, collect or pay.
 - OAuth or external identity providers, self-service signup, multiple tenants.
-- Payment gateways. Payments are recorded by hand.
 - Multiple currencies. One workspace currency.
-- Customer returns, supplier returns and credit notes. An invoice with no payments can be voided. Stock corrections go through adjustments.
+- Customer and supplier returns. Stock corrections go through adjustments.
 - Lot, serial and expiry tracking, bin locations, product variants, units-of-measure conversion.
 - Backorders. A sales order can be confirmed only when the chosen warehouse has enough stock available.
 
@@ -57,7 +56,6 @@ The roles are fixed and defined in code. Each role maps to a set of permissions 
 | **Purchasing** | Suppliers, products and purchase orders (create, edit, submit) |
 | **Sales** | Customers and sales orders |
 | **Warehouse** | Goods receipts, shipments, stock adjustments and transfers |
-| **Accountant** | Supplier invoices, customer invoices, payments and financial reports |
 
 Every signed-in user can read master data (products, warehouses, suppliers, customers) and stock levels. Writes need a permission.
 
@@ -65,7 +63,7 @@ Every signed-in user can read master data (products, warehouses, suppliers, cust
 
 ## 2. Workflows
 
-### 2.1 Procure to pay
+### 2.1 Procurement
 
 ```mermaid
 flowchart LR
@@ -77,18 +75,14 @@ flowchart LR
     E -->|goods receipt| D
     D -->|yes| F[Received]
     E -->|close remaining| G[Closed]
-    C --> H[Supplier invoice<br/>qty ≤ received − invoiced]
-    E --> H
-    F --> H
-    H --> I[Outgoing payment]
-    I --> J{Balance = 0?}
-    J -->|yes| K[Invoice paid]
-    J -->|no| L[Partially paid]
+    A -->|cancel| X[Cancelled]
+    B -->|cancel| X
+    C -->|cancel| X
 ```
 
-Each goods receipt adds to `onHand` in the PO's destination warehouse, writes `RECEIPT` stock movements and updates the product's average cost.
+Each goods receipt adds to `onHand` in the PO's destination warehouse, writes `RECEIPT` stock movements and updates the product's average cost. Closing a partly received PO stops waiting for the rest: the remaining quantity no longer counts as incoming.
 
-### 2.2 Order to cash
+### 2.2 Order fulfilment
 
 ```mermaid
 flowchart LR
@@ -97,17 +91,12 @@ flowchart LR
     C -->|no| D[Partially fulfilled]
     D -->|shipment| C
     C -->|yes| E[Fulfilled]
-    B -->|cancel<br/>release reservation| X[Cancelled]
+    A -->|cancel| X[Cancelled]
+    B -->|cancel<br/>release reservation| X
     D -->|cancel remaining<br/>release reservation| X
-    D --> F[Customer invoice<br/>qty ≤ shipped − invoiced]
-    E --> F
-    F --> G[Incoming payment]
-    G --> H{Balance = 0?}
-    H -->|yes| I[Invoice paid]
-    H -->|no| J[Partially paid]
 ```
 
-Confirming a sales order reserves stock. A shipment takes the shipped quantity off both `onHand` and `reserved`, and writes `SHIPMENT` movements with the cost at that moment. Cancelling a partly fulfilled order releases only the unshipped reservation. Its status becomes `cancelled`, and the shipped lines stay invoiceable.
+Confirming a sales order reserves stock. A shipment takes the shipped quantity off both `onHand` and `reserved`, and writes `SHIPMENT` movements with the cost at that moment. Cancelling a partly fulfilled order releases only the unshipped reservation. Its shipments stay on record.
 
 ### 2.3 Inventory operations
 
@@ -166,19 +155,15 @@ stateDiagram-v2
 ```mermaid
 stateDiagram-v2
     direction LR
-    state "Invoice (supplier and customer)" as INV {
-        [*] --> open
-        open --> partially_paid : payment
-        partially_paid --> partially_paid : payment
-        open --> paid : payment (full)
-        partially_paid --> paid : payment (rest)
-        paid --> partially_paid : payment voided
-        partially_paid --> open : payment voided
-        open --> void : void (no payments)
+    state "Stock transfer" as TRF {
+        [*] --> draft
+        draft --> in_transit : dispatch
+        in_transit --> received : receive
+        draft --> cancelled : cancel
     }
 ```
 
-"Overdue" is not a stored status. It is worked out when needed: `dueDate < today` and `balance > 0`.
+A transfer cannot be cancelled once dispatched. If the goods never arrive, the destination receives it and records a negative adjustment for the loss, so the ledger shows what happened.
 
 ### 2.5 Goods receipt posting (transaction)
 
@@ -211,14 +196,14 @@ Every stock-changing operation follows this pattern: shipments, adjustments, tra
 
 ### 3.1 Conventions
 
-- **Money** is stored as integers in minor units (cents). `1999` means 19.99. Floating-point money is never stored.
-- **Tax rates** are stored as integer basis points. `1800` means 18.00%.
+- **Money** (prices, costs, order totals) is stored as integers in minor units (cents). `1999` means 19.99. Floating-point money is never stored.
+- **Tax rates** are stored as integer basis points. `1800` means 18.00%. Tax is calculated so order totals are correct; StockFlow does not keep tax records.
 - **Quantities** are integers in the product's base unit. A product sold by weight uses `g` as its unit, not `kg`.
 - **Line items** are embedded in their parent document. They are bounded in size and always read with the parent, and updating them in one document keeps the update atomic.
 - **Snapshots:** documents copy the party name, product SKU and product name at creation. Historical documents stay correct after master data is renamed.
 - **Soft deactivation:** master data (products, warehouses, suppliers, customers, users) is deactivated with `isActive: false`, never deleted, once documents reference it. Draft documents can be hard-deleted.
 - **Timestamps:** every collection has `createdAt` and `updatedAt` in UTC. Documents also record `createdBy`.
-- **Optimistic concurrency:** Mongoose `optimisticConcurrency: true` is set on order and invoice documents. Status changes use conditional updates such as `findOneAndUpdate({ _id, status: 'approved' }, …)`.
+- **Optimistic concurrency:** Mongoose `optimisticConcurrency: true` is set on order and transfer documents. Status changes use conditional updates such as `findOneAndUpdate({ _id, status: 'approved' }, …)`.
 
 ### 3.2 Entity relationship diagram
 
@@ -238,17 +223,13 @@ erDiagram
     PURCHASE_ORDER ||--|{ PO_LINE : "embeds"
     PRODUCT ||--o{ PO_LINE : "ordered as"
     PURCHASE_ORDER ||--o{ GOODS_RECEIPT : "received by"
-    PURCHASE_ORDER ||--o{ SUPPLIER_INVOICE : "billed by"
-    SUPPLIER ||--o{ SUPPLIER_INVOICE : issues
     CUSTOMER ||--o{ SALES_ORDER : places
     WAREHOUSE ||--o{ SALES_ORDER : "fulfilled from"
     SALES_ORDER ||--|{ SO_LINE : "embeds"
     PRODUCT ||--o{ SO_LINE : "sold as"
     SALES_ORDER ||--o{ SHIPMENT : "fulfilled by"
-    SALES_ORDER ||--o{ CUSTOMER_INVOICE : "billed by"
-    CUSTOMER ||--o{ CUSTOMER_INVOICE : receives
-    SUPPLIER_INVOICE ||--o{ PAYMENT : "settled by"
-    CUSTOMER_INVOICE ||--o{ PAYMENT : "settled by"
+    GOODS_RECEIPT ||--o{ STOCK_MOVEMENT : posts
+    SHIPMENT ||--o{ STOCK_MOVEMENT : posts
 
     USER {
         ObjectId _id PK
@@ -286,6 +267,12 @@ erDiagram
         int unitCost
         ObjectId referenceId
     }
+    STOCK_TRANSFER {
+        string number UK
+        ObjectId fromWarehouseId FK
+        ObjectId toWarehouseId FK
+        string status
+    }
     PURCHASE_ORDER {
         string number UK
         ObjectId supplierId FK
@@ -297,8 +284,12 @@ erDiagram
         ObjectId productId FK
         int quantity
         int receivedQuantity
-        int invoicedQuantity
         int unitCost
+    }
+    GOODS_RECEIPT {
+        string number UK
+        ObjectId purchaseOrderId FK
+        date receivedAt
     }
     SALES_ORDER {
         string number UK
@@ -311,33 +302,16 @@ erDiagram
         ObjectId productId FK
         int quantity
         int shippedQuantity
-        int invoicedQuantity
         int unitPrice
     }
-    SUPPLIER_INVOICE {
-        string number UK
-        ObjectId purchaseOrderId FK
-        int total
-        int amountPaid
-        string status
-    }
-    CUSTOMER_INVOICE {
+    SHIPMENT {
         string number UK
         ObjectId salesOrderId FK
-        int total
-        int amountPaid
-        string status
-    }
-    PAYMENT {
-        string number UK
-        string direction
-        ObjectId invoiceId FK
-        int amount
-        string status
+        date shippedAt
     }
 ```
 
-`GOODS_RECEIPT`, `SHIPMENT`, `STOCK_ADJUSTMENT` and `STOCK_TRANSFER` each write `STOCK_MOVEMENT` records, linked through `reference.type` and `reference.id`. Those edges are left out of the diagram to keep it readable.
+`STOCK_ADJUSTMENT` and `STOCK_TRANSFER` also write `STOCK_MOVEMENT` records, linked through `reference.type` and `reference.id`. Those edges are left out of the diagram to keep it readable.
 
 ### 3.3 Collections
 
@@ -350,7 +324,7 @@ users {
   name: string
   email: string               // lowercased, trimmed
   passwordHash: string        // bcrypt, cost 12
-  role: 'admin' | 'manager' | 'purchasing' | 'sales' | 'warehouse' | 'accountant'
+  role: 'admin' | 'manager' | 'purchasing' | 'sales' | 'warehouse'
   isActive: boolean
   mustChangePassword: boolean // true after admin creates or resets the account
   lastLoginAt?: Date
@@ -370,13 +344,11 @@ sessions {                    // refresh tokens
 //          { expiresAt: 1 } TTL (expireAfterSeconds: 0)
 
 settings {                    // single document, _id: 'workspace'
-  companyName: string; address?: string; taxId?: string; email?: string; phone?: string
+  companyName: string; address?: string; email?: string; phone?: string
   currency: string            // ISO 4217, e.g. 'USD'
   defaultTaxRate: number      // basis points
-  defaultPaymentTermsDays: number
-  numberPrefixes: { purchaseOrder: 'PO', goodsReceipt: 'GRN', salesOrder: 'SO', shipment: 'SHP',
-                    supplierInvoice: 'BILL', customerInvoice: 'INV', payment: 'PAY',
-                    adjustment: 'ADJ', transfer: 'TRF' }
+  numberPrefixes: { purchaseOrder: 'PO', goodsReceipt: 'GRN', salesOrder: 'SO',
+                    shipment: 'SHP', adjustment: 'ADJ', transfer: 'TRF' }
 }
 
 counters {                    // gap-free document numbering inside the posting transaction
@@ -432,8 +404,7 @@ suppliers / customers {       // same shape, separate collections
   code: string; name: string
   contactName?: string; email?: string; phone?: string
   address?: string            // customers also: shippingAddress?
-  taxId?: string
-  paymentTermsDays: number
+  leadTimeDays?: number       // suppliers only: default expected delivery offset for new POs
   notes?: string
   isActive: boolean
 }
@@ -484,6 +455,7 @@ stockTransfers {
   notes?: string
   dispatchedAt?: Date; dispatchedBy?: Ref<users>
   receivedAt?: Date; receivedBy?: Ref<users>
+  idempotencyKey?: string
   createdBy
 }
 // indexes: { number: 1 } unique, { status: 1, createdAt: -1 }, { fromWarehouseId: 1 }, { toWarehouseId: 1 }
@@ -503,7 +475,6 @@ purchaseOrders {
     productId; sku; name; unit
     quantity: number                    // > 0
     receivedQuantity: number            // ≤ quantity
-    invoicedQuantity: number            // ≤ receivedQuantity
     unitCost: money; taxRate: number
     lineSubtotal: money; lineTax: money; lineTotal: money
   }]
@@ -511,6 +482,7 @@ purchaseOrders {
   notes?: string
   submittedAt?; approvedBy?: Ref<users>; approvedAt?
   rejectionReason?: string
+  closedAt?; closedBy?; cancelledAt?; cancelledBy?; cancelReason?
   createdBy
 }
 // indexes: { number: 1 } unique, { status: 1, orderDate: -1 }, { supplierId: 1, orderDate: -1 },
@@ -528,24 +500,9 @@ goodsReceipts {
 }
 // indexes: { number: 1 } unique, { purchaseOrderId: 1 }, { receivedAt: -1 },
 //          { idempotencyKey: 1 } unique partial
-
-supplierInvoices {
-  number: string                        // internal, e.g. BILL-2026-00007
-  supplierInvoiceNumber: string         // the supplier's reference
-  supplierId; supplierName
-  purchaseOrderId: Ref<purchaseOrders>; purchaseOrderNumber: string
-  invoiceDate: Date; dueDate: Date
-  lines: [{ poLineId, productId, sku, name, quantity, unitCost, taxRate, lineSubtotal, lineTax, lineTotal }]
-  subtotal; taxTotal; total; amountPaid: money
-  status: 'open' | 'partially_paid' | 'paid' | 'void'
-  voidedAt?; voidedBy?; voidReason?
-  createdBy
-}
-// indexes: { number: 1 } unique, { supplierId: 1, supplierInvoiceNumber: 1 } unique,
-//          { status: 1, dueDate: 1 }, { purchaseOrderId: 1 }
 ```
 
-#### Sales
+#### Order fulfilment
 
 ```ts
 salesOrders {
@@ -553,12 +510,11 @@ salesOrders {
   customerId: Ref<customers>; customerName: string
   warehouseId: Ref<warehouses>          // fulfilling warehouse
   status: 'draft' | 'confirmed' | 'partially_fulfilled' | 'fulfilled' | 'cancelled'
-  orderDate: Date; shippingAddress?: string
+  orderDate: Date; requiredDate?: Date; shippingAddress?: string
   lines: [{
     _id; productId; sku; name; unit
     quantity: number
     shippedQuantity: number             // ≤ quantity
-    invoicedQuantity: number            // ≤ shippedQuantity
     unitPrice: money; discount: money   // discount is per line, absolute
     taxRate: number
     lineSubtotal; lineTax; lineTotal
@@ -568,7 +524,7 @@ salesOrders {
   createdBy
 }
 // indexes: { number: 1 } unique, { status: 1, orderDate: -1 }, { customerId: 1, orderDate: -1 },
-//          { warehouseId: 1, status: 1 }
+//          { warehouseId: 1, status: 1 }, { 'lines.productId': 1, status: 1 }
 
 shipments {
   number: string
@@ -576,46 +532,12 @@ shipments {
   shippedAt: Date
   carrier?: string; trackingNumber?: string
   lines: [{ soLineId, productId, sku, name, quantity, unitCost: money /* avgCost at shipment → COGS */ }]
+  notes?: string
   idempotencyKey?: string
   createdBy
 }
 // indexes: { number: 1 } unique, { salesOrderId: 1 }, { shippedAt: -1 }, { idempotencyKey: 1 } unique partial
-
-customerInvoices {
-  number: string
-  customerId; customerName
-  salesOrderId; salesOrderNumber
-  issueDate: Date; dueDate: Date
-  lines: [{ soLineId, productId, sku, name, quantity, unitPrice, discount, taxRate, lineSubtotal, lineTax, lineTotal }]
-  subtotal; taxTotal; total; amountPaid
-  status: 'open' | 'partially_paid' | 'paid' | 'void'
-  voidedAt?; voidedBy?; voidReason?
-  createdBy
-}
-// indexes: { number: 1 } unique, { customerId: 1, issueDate: -1 }, { status: 1, dueDate: 1 }, { salesOrderId: 1 }
 ```
-
-#### Payments
-
-```ts
-payments {
-  number: string
-  direction: 'incoming' | 'outgoing'
-  invoiceType: 'customerInvoice' | 'supplierInvoice'
-  invoiceId: ObjectId; invoiceNumber: string
-  partyType: 'customer' | 'supplier'; partyId: ObjectId; partyName: string
-  amount: money                         // > 0, ≤ invoice balance at recording time
-  method: 'bank_transfer' | 'cash' | 'cheque' | 'card' | 'other'
-  paidAt: Date
-  reference?: string; notes?: string
-  status: 'posted' | 'void'
-  voidedAt?; voidedBy?; voidReason?
-  createdBy
-}
-// indexes: { number: 1 } unique, { invoiceId: 1 }, { partyId: 1, paidAt: -1 }, { direction: 1, paidAt: -1 }
-```
-
-Each payment settles exactly one invoice. Splitting one bank transfer across several invoices means recording one payment per invoice.
 
 ---
 
@@ -643,12 +565,12 @@ q   = received quantity,  c = PO line unit cost
 avgCost' = Q ≤ 0 ? c : round((Q × avgCost + q × c) / (Q + q))
 ```
 
-- Shipments, negative adjustments and transfer dispatches record `unitCost = avgCost` at that moment. For shipments this gives the cost of goods sold (COGS).
+- Shipments, negative adjustments and transfer dispatches record `unitCost = avgCost` at that moment. For shipments this gives the cost of goods shipped.
 - Transfers and adjustments do not change `avgCost`.
 - Inventory valuation is Σ `onHand × avgCost`, plus in-transit transfer value at the cost recorded on dispatch.
 - Rounding is half-up to the nearest minor unit. The helpers live in `packages/shared/money.ts`.
 
-### 4.3 Document totals
+### 4.3 Order totals
 
 For each line:
 
@@ -666,10 +588,10 @@ These must hold at all times. Integration tests assert them.
 
 1. `stockLevels.onHand ≥ 0` and `0 ≤ reserved ≤ onHand`.
 2. `onHand` for a (product, warehouse) equals Σ `stockMovements.quantity` for that pair (ledger reconciliation).
-3. PO line: `0 ≤ invoicedQuantity ≤ receivedQuantity ≤ quantity`.
-4. SO line: `0 ≤ invoicedQuantity ≤ shippedQuantity ≤ quantity`.
+3. PO line: `0 ≤ receivedQuantity ≤ quantity`.
+4. SO line: `0 ≤ shippedQuantity ≤ quantity`.
 5. Σ `reserved` per (product, warehouse) equals Σ `(quantity − shippedQuantity)` over lines of `confirmed` and `partially_fulfilled` SOs for that warehouse.
-6. Invoice: `0 ≤ amountPaid ≤ total`, and `amountPaid` equals Σ posted payments for that invoice.
+6. Every posted receipt, shipment, adjustment and transfer has matching movement records whose quantities sum to the document's lines.
 7. Posted stock documents (receipts, shipments, adjustments, dispatched transfers) are never edited or deleted. Mistakes are corrected with a new adjustment.
 
 ### 4.5 How consistency is enforced
@@ -683,10 +605,6 @@ These must hold at all times. Integration tests assert them.
 | Adjustment | `onHand += delta` | For negative deltas: `onHand + delta ≥ reserved` |
 | Transfer dispatch | source `onHand −= q` | `onHand − reserved ≥ q` |
 | Transfer receive | destination `onHand += q` (upsert) | Status `in_transit` |
-| Invoice create | line `invoicedQuantity += q` | `q ≤ received/shipped − invoiced` |
-| Payment record | invoice `amountPaid += a` | `$expr: amountPaid + a ≤ total`, status not `void` |
-| Payment void | invoice `amountPaid −= a` | Payment status `posted` |
-| Invoice void | lines `invoicedQuantity −= q` | `amountPaid = 0` |
 
 - Every row above runs inside `session.withTransaction()`. The stock level update, ledger insert, parent document update, document number and audit entry commit together or not at all. The driver retries the transaction on write conflicts.
 - The guards are conditional updates on the server, not read-then-write checks. When two requests race for the last units, exactly one succeeds. A concurrency test covers this.
@@ -741,28 +659,25 @@ sequenceDiagram
 
 Permissions are string constants in `packages/shared/permissions.ts`, together with the role → permission map. The server enforces them with `authorize(permission)` middleware. The client uses the same map only to hide navigation and actions.
 
-| Permission | Admin | Manager | Purchasing | Sales | Warehouse | Accountant |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|
-| `users:manage` | ✓ | | | | | |
-| `settings:manage` | ✓ | | | | | |
-| `audit:read` | ✓ | ✓ | | | | |
-| `warehouses:manage`, `categories:manage` | ✓ | ✓ | | | | |
-| `products:write` | ✓ | ✓ | ✓ | | | |
-| `suppliers:write` | ✓ | ✓ | ✓ | | | |
-| `customers:write` | ✓ | ✓ | | ✓ | | |
-| `stock:adjust` | ✓ | ✓ | | | ✓ | |
-| `stock:transfer` | ✓ | ✓ | | | ✓ | |
-| `purchaseOrders:write` | ✓ | ✓ | ✓ | | | |
-| `purchaseOrders:approve` | ✓ | ✓ | | | | |
-| `goodsReceipts:create` | ✓ | ✓ | | | ✓ | |
-| `salesOrders:write` | ✓ | ✓ | | ✓ | | |
-| `shipments:create` | ✓ | ✓ | | | ✓ | |
-| `supplierInvoices:write` | ✓ | ✓ | | | | ✓ |
-| `customerInvoices:write` | ✓ | ✓ | | | | ✓ |
-| `payments:write` | ✓ | ✓ | | | | ✓ |
-| `reports:financial` | ✓ | ✓ | | | | ✓ |
+| Permission | Admin | Manager | Purchasing | Sales | Warehouse |
+|---|:-:|:-:|:-:|:-:|:-:|
+| `users:manage` | ✓ | | | | |
+| `settings:manage` | ✓ | | | | |
+| `audit:read` | ✓ | ✓ | | | |
+| `warehouses:manage`, `categories:manage` | ✓ | ✓ | | | |
+| `products:write` | ✓ | ✓ | ✓ | | |
+| `suppliers:write` | ✓ | ✓ | ✓ | | |
+| `customers:write` | ✓ | ✓ | | ✓ | |
+| `stock:adjust` | ✓ | ✓ | | | ✓ |
+| `stock:transfer` | ✓ | ✓ | | | ✓ |
+| `purchaseOrders:write` | ✓ | ✓ | ✓ | | |
+| `purchaseOrders:approve` | ✓ | ✓ | | | |
+| `goodsReceipts:create` | ✓ | ✓ | | | ✓ |
+| `salesOrders:write` | ✓ | ✓ | | ✓ | |
+| `shipments:create` | ✓ | ✓ | | | ✓ |
+| `reports:read` | ✓ | ✓ | ✓ | | |
 
-- **Read access:** any signed-in user can read master data, stock and the documents listed in navigation they can see. Financial reports and valuation need `reports:financial`.
+- **Read access:** any signed-in user can read master data, stock, and the documents in the navigation sections they can see. Reports, which include inventory value and cost figures, need `reports:read`.
 - **Separation of duties:** a purchase order cannot be approved by the user who created it, unless that user is an admin. A small team with a single admin can still operate.
 
 ---
@@ -809,22 +724,23 @@ flowchart LR
 | Warehouses | `GET`, `POST /warehouses`, `GET`, `PATCH /warehouses/:id` | write: `warehouses:manage` |
 | Categories | `GET`, `POST /categories`, `PATCH`, `DELETE /categories/:id` (only when unused) | write: `categories:manage` |
 | Products | `GET /products?search&categoryId&isActive&lowStock`, `POST`, `GET /products/:id` (with stock per warehouse), `PATCH /products/:id` | write: `products:write` |
-| Suppliers | `GET`, `POST /suppliers`, `GET`, `PATCH /suppliers/:id`, `GET /suppliers/:id/summary` (open POs, payable balance) | write: `suppliers:write` |
-| Customers | `GET`, `POST /customers`, `GET`, `PATCH /customers/:id`, `GET /customers/:id/summary` (open SOs, receivable balance) | write: `customers:write` |
+| Suppliers | `GET`, `POST /suppliers`, `GET`, `PATCH /suppliers/:id` (detail includes open POs) | write: `suppliers:write` |
+| Customers | `GET`, `POST /customers`, `GET`, `PATCH /customers/:id` (detail includes open SOs) | write: `customers:write` |
 | Stock | `GET /stock/levels?productId&warehouseId&lowStock`, `GET /stock/movements?productId&warehouseId&type&from&to`, `GET /stock/low-stock` | any |
 | Adjustments | `GET /stock-adjustments`, `POST /stock-adjustments` (posts immediately), `GET /stock-adjustments/:id` | write: `stock:adjust` |
 | Transfers | `GET`, `POST /stock-transfers`, `GET`, `PATCH`, `DELETE /stock-transfers/:id` (draft), `POST /stock-transfers/:id/dispatch`, `/receive`, `/cancel` | write: `stock:transfer` |
 | Purchase orders | `GET`, `POST /purchase-orders`, `GET`, `PATCH`, `DELETE /purchase-orders/:id` (draft), `POST /purchase-orders/:id/submit`, `/cancel`, `/close` | `purchaseOrders:write` |
 | | `POST /purchase-orders/:id/approve`, `/reject` | `purchaseOrders:approve` |
 | Goods receipts | `GET /goods-receipts?purchaseOrderId`, `POST /goods-receipts`, `GET /goods-receipts/:id` | write: `goodsReceipts:create` |
-| Supplier invoices | `GET /supplier-invoices?status&supplierId&overdue`, `POST`, `GET /supplier-invoices/:id`, `POST /supplier-invoices/:id/void` | write: `supplierInvoices:write` |
 | Sales orders | `GET`, `POST /sales-orders`, `GET`, `PATCH`, `DELETE /sales-orders/:id` (draft), `POST /sales-orders/:id/confirm`, `/cancel` | `salesOrders:write` |
 | Shipments | `GET /shipments?salesOrderId`, `POST /shipments`, `GET /shipments/:id` | write: `shipments:create` |
-| Customer invoices | `GET /customer-invoices?status&customerId&overdue`, `POST`, `GET /customer-invoices/:id`, `POST /customer-invoices/:id/void` | write: `customerInvoices:write` |
-| Payments | `GET /payments?direction&partyId&invoiceId&from&to`, `POST /payments`, `GET /payments/:id`, `POST /payments/:id/void` | write: `payments:write` |
-| Reports | `GET /reports/dashboard` (figures limited to the caller's permissions), `GET /reports/inventory-valuation`, `/sales-summary?from&to&groupBy`, `/purchases-summary`, `/receivables-aging`, `/payables-aging` | `reports:financial` (dashboard: any) |
+| Reports | `GET /reports/dashboard` (figures limited to the caller's permissions), `GET /reports/inventory-valuation?warehouseId`, `/purchasing-summary?from&to&groupBy`, `/fulfilment-summary?from&to&groupBy`, `/stock-turnover?from&to` | `reports:read` (dashboard: any) |
 
 Reports are MongoDB aggregations over the source documents. Nothing is pre-aggregated, which is fast enough at SMB data volumes given the indexes above.
+
+- **Purchasing summary:** PO count and value by supplier or period, receipt timeliness (`receivedAt` against `expectedDate`).
+- **Fulfilment summary:** SO count, order value and units shipped by customer or period, and average days from confirmation to full shipment.
+- **Stock turnover:** units shipped and cost of goods shipped against average inventory value, per product.
 
 ---
 
@@ -837,7 +753,7 @@ Reports are MongoDB aggregations over the source documents. Nothing is pre-aggre
 - **API client:** a thin `fetch` wrapper that attaches the bearer token, refreshes once on `TOKEN_EXPIRED`, and turns error responses into a typed `ApiError`.
 - **Forms:** `react-hook-form` with `zodResolver`, using the shared schemas and shadcn `Form` components. Server `VALIDATION_ERROR` details are mapped back onto the fields.
 - **Tables:** one `DataTable` component built on TanStack Table, with server-side pagination, sorting and filters kept in the URL search params so views can be linked and survive a reload.
-- **Feedback:** toasts for completed actions, inline errors for failures, confirmation dialogs for irreversible actions (approve, post, void, cancel), and skeleton rows while loading.
+- **Feedback:** toasts for completed actions, inline errors for failures, confirmation dialogs for irreversible actions (approve, post, dispatch, cancel), and skeleton rows while loading.
 - **Money input and display:** the user types decimals and the app stores minor units. Display uses `Intl.NumberFormat` with the workspace currency.
 
 ### 7.2 Navigation
@@ -848,9 +764,9 @@ The sidebar is grouped. Items the user lacks permission for are hidden.
 |---|---|
 | — | Dashboard |
 | Inventory | Products, Stock levels, Movements, Adjustments, Transfers |
-| Purchasing | Purchase orders, Goods receipts, Supplier invoices, Suppliers |
-| Sales | Sales orders, Shipments, Customer invoices, Customers |
-| Finance | Payments, Reports |
+| Purchasing | Purchase orders, Goods receipts, Suppliers |
+| Fulfilment | Sales orders, Shipments, Customers |
+| — | Reports |
 | Admin | Users, Warehouses, Categories, Settings, Audit log |
 
 The top bar has a global warehouse filter that defaults to "All warehouses" and is applied to stock views. It also has the user menu: profile, change password and sign out.
@@ -860,25 +776,23 @@ The top bar has a global warehouse filter that defaults to "All warehouses" and 
 | Page | Contents |
 |---|---|
 | Login, Change password | Minimal forms |
-| Dashboard | Low-stock count and list, POs awaiting approval, open SOs to ship, overdue receivables and payables (financial figures by permission), recent movements |
+| Dashboard | Low-stock count and list, POs awaiting approval, POs due or overdue for delivery, SOs waiting to ship, transfers in transit, recent movements; value figures by permission |
 | Products | List (search, category, active, low stock) → detail (stock per warehouse, incoming, movements, open orders) → create/edit form |
 | Stock levels | Product × warehouse grid: on hand, reserved, available, incoming |
 | Movements | Ledger with filters; each row links to its source document |
 | Adjustments | List, create form with line editor (shows current on-hand) |
 | Transfers | List, form, detail with dispatch, receive and cancel actions |
-| Purchase orders | List with status tabs, form with line editor and totals, detail with timeline, actions by status and permission, receipts and invoices tabs |
+| Purchase orders | List with status tabs, form with line editor and totals, detail with timeline, actions by status and permission, receipts tab |
 | Goods receipt | Started from a PO: remaining quantity per line, enter quantity received |
-| Supplier / customer invoice | Started from a PO or SO: invoiceable quantities pre-filled; detail with payments and "Record payment" dialog |
-| Sales orders | List, form (available stock shown per line for the chosen warehouse), detail with confirm, ship and cancel actions |
+| Sales orders | List with status tabs, form (available stock shown per line for the chosen warehouse), detail with confirm, ship and cancel actions, shipments tab |
 | Shipment | Started from an SO: remaining quantity per line, carrier and tracking number |
-| Payments | List with filters, detail, void dialog |
-| Suppliers / Customers | List, detail (documents, balance), form |
-| Reports | Valuation, sales and purchase summaries by period, aging buckets (current, 1–30, 31–60, 61–90, 90+) |
+| Suppliers / Customers | List, detail (open and recent orders), form |
+| Reports | Inventory valuation, purchasing summary, fulfilment summary, stock turnover |
 | Admin pages | Users (create, role, deactivate, reset password), warehouses, categories, settings, audit log |
 
 ### 7.4 Shared components
 
-`AppShell`, `Sidebar`, `PageHeader` (title and actions), `DataTable`, `FilterBar`, `StatusBadge` (one colour map for all document statuses), `MoneyInput`, `Money`, `QuantityInput`, `EntityCombobox` (async search for products, suppliers, customers and warehouses), `LineItemsEditor` (shared by PO, SO, invoices, adjustments and transfers through column configuration), `DocumentTotals`, `ConfirmDialog`, `EmptyState`, `ErrorState`, `PermissionGate`. Primitives come from shadcn/ui under `components/ui`.
+`AppShell`, `Sidebar`, `PageHeader` (title and actions), `DataTable`, `FilterBar`, `StatusBadge` (one colour map for all document statuses), `MoneyInput`, `Money`, `QuantityInput`, `EntityCombobox` (async search for products, suppliers, customers and warehouses), `LineItemsEditor` (shared by POs, SOs, receipts, shipments, adjustments and transfers through column configuration), `DocumentTotals`, `ConfirmDialog`, `EmptyState`, `ErrorState`, `PermissionGate`. Primitives come from shadcn/ui under `components/ui`.
 
 ---
 
@@ -905,9 +819,8 @@ stockflow/
 │   │   │   │   ├── suppliers/
 │   │   │   │   ├── customers/
 │   │   │   │   ├── stock/         stock-level.model.ts, stock-movement.model.ts, stock.service.ts, adjustments/, transfers/
-│   │   │   │   ├── purchasing/    purchase-orders/, goods-receipts/, supplier-invoices/
-│   │   │   │   ├── sales/         sales-orders/, shipments/, customer-invoices/
-│   │   │   │   ├── payments/
+│   │   │   │   ├── purchasing/    purchase-orders/, goods-receipts/
+│   │   │   │   ├── fulfilment/    sales-orders/, shipments/
 │   │   │   │   └── reports/
 │   │   │   ├── routes.ts          mounts module routers under /api/v1
 │   │   │   ├── app.ts             express app factory (used by tests)
@@ -955,12 +868,12 @@ Vitest runs both apps and the shared package.
 
 | Layer | Tool | Focus |
 |---|---|---|
-| Shared unit | Vitest | Money rounding, line and document totals, average cost formula, permission map |
-| API integration | Vitest + Supertest + `mongodb-memory-server` (replica set) | Each workflow end to end through HTTP. Covers auth (login, refresh rotation, reuse detection, deactivation), RBAC denials, the PO lifecycle and partial receipts, SO reserve, ship and cancel, invoicing limits, payments and voids, adjustments, transfers |
-| Concurrency | Same harness | Parallel confirms and shipments competing for the last units: exactly one succeeds, invariants hold |
-| Invariants | Test helper | After each workflow test: ledger matches `onHand`, reservations match open SO lines, invoice payments sum correctly |
+| Shared unit | Vitest | Money rounding, line and order totals, average cost formula, permission map |
+| API integration | Vitest + Supertest + `mongodb-memory-server` (replica set) | Each workflow end to end through HTTP. Covers auth (login, refresh rotation, reuse detection, deactivation), RBAC denials, the PO lifecycle and partial receipts, SO reserve, ship and cancel, adjustments, transfers |
+| Concurrency | Same harness | Parallel confirms, shipments and dispatches competing for the last units: exactly one succeeds, invariants hold |
+| Invariants | Test helper | After each workflow test: ledger matches `onHand`, reservations match open SO lines, line quantities stay within bounds |
 | Web component | Vitest + Testing Library | `LineItemsEditor`, `MoneyInput`, API client refresh logic |
-| E2E | Playwright against the Docker stack with seed data | Login; PO create → approve → receive → stock increases; SO create → confirm → ship → invoice → pay; role-based visibility |
+| E2E | Playwright against the Docker stack with seed data | Login; PO create → approve → receive → stock increases; SO create → confirm → ship → stock decreases; transfer dispatch → receive; role-based visibility |
 
 ### 9.2 Docker and CI
 
@@ -969,7 +882,7 @@ Vitest runs both apps and the shared package.
 
 ### 9.3 Seed data
 
-`npm run seed` resets the development database. It then creates the workspace settings, one user per role, three warehouses, categories, about 40 products, suppliers and customers. Documents are created through the services rather than inserted directly, so their stock, ledger and balances are consistent. The seed refuses to run when `NODE_ENV=production`.
+`npm run seed` resets the development database. It then creates the workspace settings, one user per role, three warehouses, categories, about 40 products, suppliers and customers. Purchase orders, receipts, sales orders, shipments, adjustments and transfers are created through the services rather than inserted directly, so their stock levels and ledger are consistent. The seed refuses to run when `NODE_ENV=production`.
 
 ---
 
@@ -977,23 +890,22 @@ Vitest runs both apps and the shared package.
 
 | # | Decision | Reason | Trade-off |
 |---|---|---|---|
-| 1 | MongoDB replica set and multi-document transactions for every stock or financial posting | Stock levels, ledger, order lines and numbering must change together | A replica set is needed even in development (single node in Docker and tests) |
-| 2 | Conditional atomic updates as stock guards, inside the transaction | Prevents overselling under concurrent requests without application-level locks | Guards must be written carefully per operation and covered by concurrency tests |
-| 3 | Separate `stockLevels` (current state) and an append-only `stockMovements` (ledger) | Fast reads of current stock plus a full audit trail that can be reconciled | Two writes per change, both in one transaction |
-| 4 | Integer minor units for money, basis points for tax, integer quantities | Exact arithmetic without decimal libraries | Fractional quantities must use a smaller base unit |
-| 5 | Moving weighted average cost per product | Standard for SMBs; simple and stable valuation and COGS | Not FIFO; cost is shared across warehouses |
-| 6 | Embedded line items with snapshots | Atomic document updates; historical accuracy | Product renames don't change old documents (intended) |
-| 7 | Reservation at SO confirmation, no backorders | Keeps `available` meaningful; simpler fulfilment | Orders larger than available stock must wait for stock or be split |
-| 8 | Two-step transfers (dispatch, receive) | Matches physical reality; in-transit stock is visible | One extra action compared with an instant transfer |
-| 9 | Invoices limited to received (purchases) or shipped (sales) quantities | Three-way match: no billing for goods not delivered | No pre-billing or deposits |
-| 10 | One payment per invoice; overdue is derived | Simple, correct balances | A bulk payment is entered as several records |
-| 11 | Fixed roles with a permission map in a shared package | Covers the business needs; one source of truth for API and UI | Custom roles would need a schema change later |
-| 12 | Short-lived JWT in memory and a rotating refresh token in an httpOnly cookie, user reloaded per request | XSS cannot read the refresh token; deactivation and role changes apply immediately | One user lookup per request |
-| 13 | Shared Zod schemas between web and api | One validation definition; typed forms and requests | The shared package must stay free of Node-only and browser-only code |
-| 14 | Offset pagination | Page numbers suit back-office tables; data volumes are modest | Slower on very deep pages (not expected here) |
-| 15 | Reports computed by aggregation, not stored | No duplicated state to keep in sync | Heavier queries; mitigated by indexes |
-| 16 | Vitest everywhere, Playwright for E2E | One unit and integration runner, native TypeScript and ESM | — |
-| 17 | Feature-module layout on both api and web | Each domain is self-contained; phases add folders without reshaping existing code | Some repeated boilerplate per module |
+| 1 | No invoicing, payments or financial status tracking | Keeps the product focused on inventory, procurement, warehouse operations and fulfilment | Order prices and totals are informational; billing happens in another system |
+| 2 | MongoDB replica set and multi-document transactions for every stock posting | Stock levels, ledger, order lines and numbering must change together | A replica set is needed even in development (single node in Docker and tests) |
+| 3 | Conditional atomic updates as stock guards, inside the transaction | Prevents overselling under concurrent requests without application-level locks | Guards must be written carefully per operation and covered by concurrency tests |
+| 4 | Separate `stockLevels` (current state) and an append-only `stockMovements` (ledger) | Fast reads of current stock plus a full audit trail that can be reconciled | Two writes per change, both in one transaction |
+| 5 | Integer minor units for money, basis points for tax, integer quantities | Exact arithmetic without decimal libraries | Fractional quantities must use a smaller base unit |
+| 6 | Moving weighted average cost per product | Standard for SMBs; simple and stable valuation and cost of goods shipped | Not FIFO; cost is shared across warehouses |
+| 7 | Embedded line items with snapshots | Atomic document updates; historical accuracy | Product renames don't change old documents (intended) |
+| 8 | Reservation at SO confirmation, no backorders | Keeps `available` meaningful; simpler fulfilment | Orders larger than available stock must wait for stock or be split |
+| 9 | Two-step transfers (dispatch, receive) | Matches physical reality; in-transit stock is visible | One extra action compared with an instant transfer |
+| 10 | Fixed roles with a permission map in a shared package | Covers the business needs; one source of truth for API and UI | Custom roles would need a schema change later |
+| 11 | Short-lived JWT in memory and a rotating refresh token in an httpOnly cookie, user reloaded per request | XSS cannot read the refresh token; deactivation and role changes apply immediately | One user lookup per request |
+| 12 | Shared Zod schemas between web and api | One validation definition; typed forms and requests | The shared package must stay free of Node-only and browser-only code |
+| 13 | Offset pagination | Page numbers suit back-office tables; data volumes are modest | Slower on very deep pages (not expected here) |
+| 14 | Reports computed by aggregation, not stored | No duplicated state to keep in sync | Heavier queries; mitigated by indexes |
+| 15 | Vitest everywhere, Playwright for E2E | One unit and integration runner, native TypeScript and ESM | — |
+| 16 | Feature-module layout on both api and web | Each domain is self-contained; phases add folders without reshaping existing code | Some repeated boilerplate per module |
 
 Dependencies beyond the required stack are limited to: `react-hook-form` and `@hookform/resolvers` (shadcn forms), `@tanstack/react-table`, `pino` and `pino-http`, `helmet`, `cors`, `cookie-parser`, `express-rate-limit`, `jsonwebtoken`, `bcrypt`, and `mongodb-memory-server` (tests only).
 
@@ -1011,7 +923,6 @@ Each phase ends with passing tests, an `IMPLEMENTATION_LOG.md` entry and a commi
 | **3. Master data** | Warehouses, categories, products, suppliers, customers: API, validation, list, detail and form pages, search and filters | CRUD tests pass; deactivation rules enforced |
 | **4. Inventory core** | `stockService`, stock levels, movement ledger, adjustments, transfers, stock levels and movements pages, low-stock list | Invariant and concurrency tests pass for adjustments and transfers |
 | **5. Procurement** | Purchase orders with approval, goods receipts (partial), average cost, incoming quantities, document numbering | PO lifecycle tests pass, including over-receipt rejection and cost recalculation |
-| **6. Sales** | Sales orders, reservations, shipments, cancellation and release, COGS capture | Reservation race test passes; invariants hold |
-| **7. Invoices and payments** | Supplier and customer invoices with quantity matching, payments, voids, balances, party summaries | Invoice and payment tests pass, including over-payment and void rules |
-| **8. Dashboard and reports** | Dashboard, valuation, sales and purchase summaries, aging reports | Report figures verified against seeded documents in tests |
-| **9. Hardening and delivery** | Seed data, Playwright E2E suite, full Docker stack, CI with E2E, accessibility and responsive pass, comprehensive README | E2E suite green in CI; fresh clone runs with documented commands |
+| **6. Order fulfilment** | Sales orders, reservations, shipments, cancellation and release, cost of goods shipped | Reservation race test passes; invariants hold |
+| **7. Dashboard and reports** | Dashboard, inventory valuation, purchasing summary, fulfilment summary, stock turnover | Report figures verified against seeded documents in tests |
+| **8. Hardening and delivery** | Seed data, Playwright E2E suite, full Docker stack, CI with E2E, accessibility and responsive pass, comprehensive README | E2E suite green in CI; fresh clone runs with documented commands |
