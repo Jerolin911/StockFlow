@@ -10,12 +10,13 @@ import {
   sortParam,
 } from './fields.js';
 
-export const MOVEMENT_TYPES = ['OPENING', 'ADJUSTMENT'] as const;
+export const MOVEMENT_TYPES = ['OPENING', 'ADJUSTMENT', 'RECEIPT'] as const;
 export type MovementType = (typeof MOVEMENT_TYPES)[number];
 
 export const MOVEMENT_TYPE_LABELS: Record<MovementType, string> = {
   OPENING: 'Opening stock',
   ADJUSTMENT: 'Adjustment',
+  RECEIPT: 'Goods receipt',
 };
 
 export const ADJUSTMENT_REASONS = [
@@ -39,6 +40,10 @@ export const ADJUSTMENT_REASON_LABELS: Record<AdjustmentReason, string> = {
 
 export const STOCK_DOCUMENT_TYPES = ['opening', 'adjustment'] as const;
 export type StockDocumentType = (typeof STOCK_DOCUMENT_TYPES)[number];
+
+/** Documents a stock movement can point back to. */
+export const MOVEMENT_REFERENCE_TYPES = [...STOCK_DOCUMENT_TYPES, 'goodsReceipt'] as const;
+export type MovementReferenceType = (typeof MOVEMENT_REFERENCE_TYPES)[number];
 
 const uniqueProducts = (lines: { productId: string }[]) =>
   new Set(lines.map((line) => line.productId)).size === lines.length;

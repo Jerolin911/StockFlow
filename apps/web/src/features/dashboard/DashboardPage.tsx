@@ -13,6 +13,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Skeleton } from '@/components/ui/skeleton';
 import { StockBadge } from '@/components/StatusBadge';
 import { useCurrentUser } from '@/features/auth/auth-context';
+import { usePurchaseOrders, usePurchaseRequests } from '@/features/purchasing/api';
 import { useStockLevels } from '@/features/stock/api';
 import { useUserStats } from '@/features/users/api';
 import { cn } from '@/lib/utils';
@@ -99,7 +100,13 @@ const ACCESS_AREAS: { title: string; permissions: Permission[] }[] = [
   { title: 'Warehouse operations', permissions: ['goodsReceipts:create', 'shipments:create'] },
   {
     title: 'Procurement',
-    permissions: ['suppliers:write', 'purchaseOrders:write', 'purchaseOrders:approve'],
+    permissions: [
+      'purchaseRequests:create',
+      'purchaseRequests:approve',
+      'suppliers:write',
+      'purchaseOrders:write',
+      'purchaseOrders:approve',
+    ],
   },
   { title: 'Sales', permissions: ['customers:write', 'salesOrders:write'] },
   {
@@ -119,6 +126,7 @@ export function DashboardPage() {
         title="Dashboard"
         description={`Signed in as ${user.name} · ${ROLE_LABELS[user.role]}`}
       />
+      <PurchasingTiles />
       <div className="grid gap-6 lg:grid-cols-3">
         <LowStockCard className="lg:col-span-2" />
         {isAdmin ? (
@@ -224,5 +232,61 @@ function UsersCard() {
         </Button>
       </CardContent>
     </Card>
+  );
+}
+
+function PurchasingTiles() {
+  const requests = usePurchaseRequests({ status: 'submitted', pageSize: 1 });
+  const approvals = usePurchaseOrders({ status: 'pending_approval', pageSize: 1 });
+  const open = usePurchaseOrders({ open: 'true', pageSize: 1 });
+  const overdue = usePurchaseOrders({ overdue: 'true', pageSize: 1 });
+
+  const tiles = [
+    {
+      label: 'Requests awaiting approval',
+      query: requests,
+      to: '/purchase-requests?status=submitted',
+    },
+    {
+      label: 'Orders awaiting approval',
+      query: approvals,
+      to: '/purchase-orders?status=pending_approval',
+    },
+    { label: 'Open purchase orders', query: open, to: '/purchase-orders?open=true' },
+    {
+      label: 'Overdue deliveries',
+      query: overdue,
+      to: '/purchase-orders?overdue=true',
+      alert: true,
+    },
+  ];
+
+  return (
+    <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      {tiles.map((tile) => {
+        const total = tile.query.data?.meta.total;
+        return (
+          <Link
+            key={tile.label}
+            to={tile.to}
+            className="bg-card hover:border-primary/40 focus-visible:ring-ring/50 rounded-xl border px-4 py-4 shadow-xs outline-none focus-visible:ring-[3px]"
+          >
+            <p className="text-muted-foreground text-sm">{tile.label}</p>
+            {total === undefined ? (
+              <Skeleton className="mt-2 h-7 w-12" />
+            ) : (
+              <p
+                className={cn(
+                  'mt-1 text-2xl font-semibold tabular-nums',
+                  tile.alert && total > 0 && 'text-red-700',
+                )}
+              >
+                {total}
+              </p>
+            )}
+          </Link>
+        );
+      })}
+    </div>
   );
 }

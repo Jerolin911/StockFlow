@@ -16,7 +16,7 @@ export async function nextSequence(key: string, session?: ClientSession): Promis
  * Yearly document numbers such as ADJ-2026-00042. Called inside the posting transaction,
  * so an aborted posting doesn't consume a number.
  */
-export async function nextDocumentNumber(prefix: string, session: ClientSession): Promise<string> {
+export async function nextDocumentNumber(prefix: string, session?: ClientSession): Promise<string> {
   const year = new Date().getUTCFullYear();
   const seq = await nextSequence(`${prefix}-${year}`, session);
   return `${prefix}-${year}-${String(seq).padStart(5, '0')}`;

@@ -16,6 +16,7 @@ export function api(app: Express, token: string) {
     get: (url: string) => request(app).get(`/api/v1${url}`).set(auth),
     post: (url: string, body: object) => request(app).post(`/api/v1${url}`).set(auth).send(body),
     patch: (url: string, body: object) => request(app).patch(`/api/v1${url}`).set(auth).send(body),
+    put: (url: string, body: object) => request(app).put(`/api/v1${url}`).set(auth).send(body),
     delete: (url: string) => request(app).delete(`/api/v1${url}`).set(auth),
   };
 }

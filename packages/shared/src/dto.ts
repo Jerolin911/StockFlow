@@ -1,6 +1,11 @@
 import type { Currency } from './money.js';
 import type { Unit } from './schemas/master-data.js';
-import type { AdjustmentReason, MovementType, StockDocumentType } from './schemas/stock.js';
+import type {
+  AdjustmentReason,
+  MovementReferenceType,
+  MovementType,
+  StockDocumentType,
+} from './schemas/stock.js';
 
 export interface SettingsDto {
   companyName: string;
@@ -116,7 +121,7 @@ export interface StockMovementDto {
   unitCost: number;
   product: ProductRef;
   warehouse: WarehouseRef;
-  reference: { type: StockDocumentType; id: string; number: string };
+  reference: { type: MovementReferenceType; id: string; number: string };
   createdBy: UserRef;
   createdAt: string;
 }

@@ -9,3 +9,5 @@ export * from './schemas/auth.js';
 export * from './schemas/users.js';
 export * from './schemas/master-data.js';
 export * from './schemas/stock.js';
+export * from './dto-procurement.js';
+export * from './schemas/procurement.js';

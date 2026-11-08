@@ -9,6 +9,16 @@ import { ProductsPage } from '@/features/catalog/ProductsPage';
 import { WarehousesPage } from '@/features/catalog/WarehousesPage';
 import { DashboardPage } from '@/features/dashboard/DashboardPage';
 import { PartnersPage } from '@/features/partners/PartnersPage';
+import { GoodsReceiptDetailPage } from '@/features/purchasing/GoodsReceiptDetailPage';
+import { GoodsReceiptFormPage } from '@/features/purchasing/GoodsReceiptFormPage';
+import { GoodsReceiptsPage } from '@/features/purchasing/GoodsReceiptsPage';
+import { PurchaseOrderDetailPage } from '@/features/purchasing/PurchaseOrderDetailPage';
+import { PurchaseOrderFormPage } from '@/features/purchasing/PurchaseOrderFormPage';
+import { PurchaseOrdersPage } from '@/features/purchasing/PurchaseOrdersPage';
+import { PurchaseRequestDetailPage } from '@/features/purchasing/PurchaseRequestDetailPage';
+import { PurchaseRequestFormPage } from '@/features/purchasing/PurchaseRequestFormPage';
+import { PurchaseRequestsPage } from '@/features/purchasing/PurchaseRequestsPage';
+import { SupplierDetailPage } from '@/features/purchasing/SupplierDetailPage';
 import { SettingsPage } from '@/features/settings/SettingsPage';
 import { AdjustmentDetailPage } from '@/features/stock/AdjustmentDetailPage';
 import { AdjustmentsPage } from '@/features/stock/AdjustmentsPage';
@@ -44,6 +54,31 @@ export const router = createBrowserRouter([
           { path: '/categories', element: <CategoriesPage /> },
           { path: '/warehouses', element: <WarehousesPage /> },
           { path: '/suppliers', element: <PartnersPage key="suppliers" kind="suppliers" /> },
+          { path: '/suppliers/:id', element: <SupplierDetailPage /> },
+          { path: '/purchase-requests', element: <PurchaseRequestsPage /> },
+          {
+            element: <RequirePermission permission="purchaseRequests:create" />,
+            children: [
+              { path: '/purchase-requests/new', element: <PurchaseRequestFormPage /> },
+              { path: '/purchase-requests/:id/edit', element: <PurchaseRequestFormPage /> },
+            ],
+          },
+          { path: '/purchase-requests/:id', element: <PurchaseRequestDetailPage /> },
+          { path: '/purchase-orders', element: <PurchaseOrdersPage /> },
+          {
+            element: <RequirePermission permission="purchaseOrders:write" />,
+            children: [
+              { path: '/purchase-orders/new', element: <PurchaseOrderFormPage /> },
+              { path: '/purchase-orders/:id/edit', element: <PurchaseOrderFormPage /> },
+            ],
+          },
+          { path: '/purchase-orders/:id', element: <PurchaseOrderDetailPage /> },
+          { path: '/goods-receipts', element: <GoodsReceiptsPage /> },
+          {
+            element: <RequirePermission permission="goodsReceipts:create" />,
+            children: [{ path: '/goods-receipts/new', element: <GoodsReceiptFormPage /> }],
+          },
+          { path: '/goods-receipts/:id', element: <GoodsReceiptDetailPage /> },
           { path: '/customers', element: <PartnersPage key="customers" kind="customers" /> },
           {
             element: <RequirePermission permission="users:manage" />,

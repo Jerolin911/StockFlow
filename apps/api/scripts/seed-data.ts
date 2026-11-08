@@ -3,7 +3,9 @@ import {
   createCustomerSchema,
   createProductSchema,
   createSupplierSchema,
+  goodsReceiptSchema,
   openingStockSchema,
+  purchaseOrderSchema,
   stockAdjustmentSchema,
   type Role,
   type Unit,
@@ -11,7 +13,18 @@ import {
 import { hashPassword } from '../src/modules/auth/passwords.js';
 import { Category } from '../src/modules/categories/categories.js';
 import { customers, suppliers } from '../src/modules/partners/partners.js';
+import { nextDocumentNumber } from '../src/lib/counters.js';
+import { Product } from '../src/modules/products/product.model.js';
 import { createProduct } from '../src/modules/products/products.js';
+import {
+  dateFromIso,
+  historyEntry,
+  snapshot,
+  type Actor,
+} from '../src/modules/purchasing/common.js';
+import { postGoodsReceipt } from '../src/modules/purchasing/goods-receipts.js';
+import { PurchaseOrder, PurchaseRequest, SupplierPrice } from '../src/modules/purchasing/models.js';
+import { createPurchaseOrder } from '../src/modules/purchasing/purchase-orders.js';
 import { postAdjustment, registerOpeningStock } from '../src/modules/stock/adjustments.service.js';
 import { User } from '../src/modules/users/user.model.js';
 import { Warehouse } from '../src/modules/warehouses/warehouse.model.js';
@@ -203,6 +216,156 @@ export async function seedDatabase(): Promise<void> {
     inventoryManager,
   );
 
-  for (const supplier of SUPPLIERS) await suppliers.create(createSupplierSchema.parse(supplier));
+  const supplierIds: string[] = [];
+  for (const supplier of SUPPLIERS) {
+    supplierIds.push((await suppliers.create(createSupplierSchema.parse(supplier)))._id.toString());
+  }
   for (const customer of CUSTOMERS) await customers.create(createCustomerSchema.parse(customer));
+
+  await seedProcurement(users, supplierIds, productIds, warehouseId);
+}
+
+type SeedUser = { _id: mongoose.Types.ObjectId; name: string; email: string; role: Role };
+
+/** Supplier prices, a pending request and purchase orders in each stage, received via the real services. */
+async function seedProcurement(
+  users: SeedUser[],
+  supplierIds: string[],
+  productIds: string[],
+  warehouseId: (code: string) => string,
+) {
+  const actor = (role: Role): Actor => {
+    const u = users.find((user) => user.role === role)!;
+    return { id: u._id.toString(), name: u.name, email: u.email, role, mustChangePassword: false };
+  };
+  const procurement = actor('procurement_manager');
+  const admin = actor('admin');
+  const staff = actor('staff');
+  const [brightline, volt, oakridge, packright] = supplierIds as [string, string, string, string];
+
+  // Supplier prices at roughly 5% below list cost, by the supplier's speciality.
+  const ranges: [string, number[]][] = [
+    [brightline, [0, 1, 2, 3, 4]],
+    [volt, [5, 6, 7, 8, 9]],
+    [oakridge, [10, 11, 12]],
+    [packright, [13, 14, 15, 16, 17, 18]],
+  ];
+  for (const [supplierId, indexes] of ranges) {
+    for (const i of indexes) {
+      const [, , , cost] = PRODUCTS[i]!;
+      await SupplierPrice.create({
+        supplierId,
+        productId: productIds[i],
+        unitCost: Math.round(cost * 0.95),
+        supplierSku: `S-${String(i + 1).padStart(3, '0')}`,
+      });
+    }
+  }
+
+  const approve = (id: string) =>
+    PurchaseOrder.updateOne(
+      { _id: id },
+      {
+        $set: { status: 'approved', approvedBy: snapshot(admin), approvedAt: new Date() },
+        $push: {
+          history: {
+            $each: [historyEntry(procurement, 'submitted'), historyEntry(admin, 'approved')],
+          },
+        },
+      },
+    );
+  const order = (supplierId: string, expectedDate: string | null, lines: [number, number][]) =>
+    createPurchaseOrder(
+      purchaseOrderSchema.parse({
+        supplierId,
+        warehouseId: warehouseId('MAIN'),
+        expectedDate,
+        lines: lines.map(([i, quantity]) => ({ productId: productIds[i], quantity })),
+      }),
+      procurement,
+    );
+  const lineId = async (poId: string, productIndex: number) => {
+    const po = await PurchaseOrder.findById(poId).lean();
+    return po!.lines
+      .find((l) => l.productId.toString() === productIds[productIndex])!
+      ._id.toString();
+  };
+  const inDays = (days: number) => {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+  };
+
+  // Fully received, on time.
+  const chairs = await order(oakridge, inDays(10), [[10, 4]]);
+  await approve(chairs);
+  await postGoodsReceipt(
+    goodsReceiptSchema.parse({
+      purchaseOrderId: chairs,
+      deliveryNote: 'OAK-55120',
+      lines: [{ poLineId: await lineId(chairs, 10), acceptedQuantity: 4 }],
+    }),
+    staff,
+  );
+
+  // Partially received with damaged goods; keyboards still outstanding.
+  const electronics = await order(volt, inDays(3), [
+    [5, 20],
+    [7, 10],
+  ]);
+  await approve(electronics);
+  await postGoodsReceipt(
+    goodsReceiptSchema.parse({
+      purchaseOrderId: electronics,
+      deliveryNote: 'VD-88231',
+      lines: [
+        {
+          poLineId: await lineId(electronics, 5),
+          acceptedQuantity: 12,
+          damagedQuantity: 3,
+          rejectionReason: 'Crushed outer cartons',
+        },
+      ],
+    }),
+    staff,
+  );
+
+  // Approved but past its expected date.
+  const tape = await order(packright, inDays(-2), [[14, 240]]);
+  await approve(tape);
+
+  // Awaiting approval.
+  const files = await order(brightline, inDays(4), [
+    [2, 100],
+    [1, 20],
+  ]);
+  await PurchaseOrder.updateOne(
+    { _id: files },
+    {
+      $set: { status: 'pending_approval' },
+      $push: { history: historyEntry(procurement, 'submitted') },
+    },
+  );
+
+  // A request from the warehouse floor waiting for approval.
+  const requested = await Product.find(
+    { _id: { $in: [productIds[17], productIds[18]] } },
+    { sku: 1, name: 1, unit: 1 },
+  ).lean();
+  await PurchaseRequest.create({
+    number: await nextDocumentNumber('PR'),
+    status: 'submitted',
+    warehouseId: warehouseId('MAIN'),
+    neededBy: dateFromIso(inDays(7)),
+    notes: 'Gloves running out on the packing line',
+    lines: requested.map((p) => ({
+      productId: p._id,
+      sku: p.sku,
+      name: p.name,
+      unit: p.unit,
+      quantity: p._id.toString() === productIds[17] ? 40 : 20,
+    })),
+    requestedBy: snapshot(staff),
+    history: [historyEntry(staff, 'created'), historyEntry(staff, 'submitted')],
+  });
 }

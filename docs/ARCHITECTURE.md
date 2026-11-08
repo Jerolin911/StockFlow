@@ -67,20 +67,28 @@ Every signed-in user can read master data (products, warehouses, suppliers, cust
 
 ```mermaid
 flowchart LR
-    A[Draft PO] -->|submit| B[Pending approval]
+    R1[Draft request] -->|submit| R2[Request awaiting approval]
+    R2 -->|approve| R3[Approved request]
+    R2 -->|reject| RX[Rejected]
+    R3 -->|create PO for a supplier| A
+    A[Draft PO] -->|submit| B[PO awaiting approval]
     B -->|approve| C[Approved]
     B -->|reject| A
-    C -->|goods receipt| D{All lines<br/>received?}
+    C -->|goods receipt| D{All lines fully<br/>accepted?}
     D -->|no| E[Partially received]
     E -->|goods receipt| D
     D -->|yes| F[Received]
     E -->|close remaining| G[Closed]
     A -->|cancel| X[Cancelled]
     B -->|cancel| X
-    C -->|cancel| X
+    C -->|cancel, no receipts yet| X
 ```
 
-Each goods receipt adds to `onHand` in the PO's destination warehouse, writes `RECEIPT` stock movements and updates the product's average cost. Closing a partly received PO stops waiting for the rest: the remaining quantity no longer counts as incoming.
+- **Purchase requests** are raised by staff, inventory or procurement and approved by procurement (not by the requester unless they're an admin). An approved request becomes a draft PO for the supplier chosen at conversion; deleting or cancelling that PO returns the request to approved.
+- **Pricing:** PO lines default to the supplier's price list entry, else the product's cost price. The expected date defaults from the supplier's lead time.
+- **Goods receipts** record accepted, rejected and damaged quantities per line. Only accepted units add to `onHand` (RECEIPT movements, moving average cost). Outstanding = ordered − accepted, so rejected and damaged units stay outstanding until redelivered or the PO is closed.
+- **Cancel vs close:** a PO can be cancelled until its first receipt; after that, closing with a reason ends what's outstanding.
+- **Supplier delivery history:** receipts carry the order's expected date, giving on-time/late counts and rejected/damaged rates per supplier.
 
 ### 2.2 Order fulfilment
 
@@ -475,42 +483,66 @@ stockTransfers {
 #### Procurement
 
 ```ts
+supplierPrices {              // supplier price list
+  supplierId: Ref<suppliers>; productId: Ref<products>
+  unitCost: money; supplierSku: string
+}
+// indexes: { supplierId: 1, productId: 1 } unique, { productId: 1 }
+
+purchaseRequests {
+  number: string              // PR-2026-00001
+  status: 'draft' | 'submitted' | 'approved' | 'rejected' | 'ordered' | 'cancelled'
+  warehouseId: Ref<warehouses>
+  supplier: { _id, code, name } | null      // preferred, optional
+  neededBy: Date | null; notes: string
+  lines: [{ _id, productId, sku, name, unit, quantity, note }]
+  requestedBy: { _id, name }
+  purchaseOrder: { _id, number } | null     // set when ordered
+  rejectionReason: string
+  history: [{ action, at, by: { _id, name }, note }]
+}
+// indexes: { number: 1 } unique, { status: 1, createdAt: -1 }, { 'requestedBy._id': 1, createdAt: -1 }
+
 purchaseOrders {
-  number: string
-  supplierId: Ref<suppliers>; supplierName: string
-  warehouseId: Ref<warehouses>          // destination
+  number: string              // PO-2026-00001
   status: 'draft' | 'pending_approval' | 'approved' | 'partially_received' | 'received' | 'closed' | 'cancelled'
-  orderDate: Date; expectedDate?: Date
+  supplier: { _id, code, name }             // snapshot
+  warehouseId: Ref<warehouses>              // destination
+  purchaseRequest: { _id, number } | null
+  orderDate: Date; expectedDate: Date | null
   lines: [{
     _id: ObjectId
     productId; sku; name; unit
-    quantity: number                    // > 0
-    receivedQuantity: number            // ≤ quantity
+    quantity: number                        // > 0
+    receivedQuantity: number                // accepted into stock, ≤ quantity
+    rejectedQuantity: number                // delivered but not accepted
+    damagedQuantity: number
     unitCost: money; taxRate: number
     lineSubtotal: money; lineTax: money; lineTotal: money
   }]
   subtotal: money; taxTotal: money; total: money
-  notes?: string
-  submittedAt?; approvedBy?: Ref<users>; approvedAt?
-  rejectionReason?: string
-  closedAt?; closedBy?; cancelledAt?; cancelledBy?; cancelReason?
-  createdBy
+  notes: string
+  createdBy: { _id, name }; approvedBy: { _id, name } | null; approvedAt: Date | null
+  rejectionReason: string; cancelReason: string; closeReason: string
+  receiptCount: number
+  history: [{ action, at, by: { _id, name }, note }]
 }
-// indexes: { number: 1 } unique, { status: 1, orderDate: -1 }, { supplierId: 1, orderDate: -1 },
-//          { warehouseId: 1, status: 1 }, { 'lines.productId': 1, status: 1 }  // incoming qty
+// pending = quantity − receivedQuantity, or 0 when closed/cancelled
+// indexes: { number: 1 } unique, { status: 1, orderDate: -1 }, { 'supplier._id': 1, orderDate: -1 },
+//          { warehouseId: 1, status: 1 }, { 'lines.productId': 1, status: 1 }
 
 goodsReceipts {
-  number: string
-  purchaseOrderId: Ref<purchaseOrders>; purchaseOrderNumber: string
-  supplierId; warehouseId
-  receivedAt: Date
-  lines: [{ poLineId: ObjectId, productId, sku, name, quantity: number, unitCost: money }]
-  notes?: string
-  idempotencyKey?: string
-  createdBy
+  number: string              // GRN-2026-00001
+  purchaseOrder: { _id, number }
+  supplier: { _id, code, name }; warehouseId
+  receivedAt: Date; expectedDate: Date | null   // copied from the PO for on-time reporting
+  deliveryNote: string; notes: string
+  lines: [{ poLineId, productId, sku, name, unit,
+            acceptedQuantity, rejectedQuantity, damagedQuantity, rejectionReason, unitCost }]
+  createdBy: { _id, name }
 }
-// indexes: { number: 1 } unique, { purchaseOrderId: 1 }, { receivedAt: -1 },
-//          { idempotencyKey: 1 } unique partial
+// posted at creation; immutable. accepted ≤ outstanding per line; a reason is required for rejected/damaged.
+// indexes: { number: 1 } unique, { 'purchaseOrder._id': 1 }, { 'supplier._id': 1, receivedAt: -1 }, { receivedAt: -1 }
 ```
 
 #### Order fulfilment
@@ -670,26 +702,28 @@ sequenceDiagram
 
 Permissions are string constants in `packages/shared/permissions.ts`, together with the role → permission map. The server enforces them with `authorize(permission)` middleware. The client uses the same map only to hide navigation and actions.
 
-| Permission               | Admin | Inventory Mgr | Procurement Mgr | Sales Mgr | Staff |
-| ------------------------ | :---: | :-----------: | :-------------: | :-------: | :---: |
-| `users:manage`           |   ✓   |               |                 |           |       |
-| `settings:manage`        |   ✓   |               |                 |           |       |
-| `audit:read`             |   ✓   |               |                 |           |       |
-| `warehouses:manage`      |   ✓   |       ✓       |                 |           |       |
-| `categories:manage`      |   ✓   |       ✓       |                 |           |       |
-| `products:write`         |   ✓   |       ✓       |                 |           |       |
-| `stock:adjust`           |   ✓   |       ✓       |                 |           |       |
-| `stock:transfer`         |   ✓   |       ✓       |                 |           |   ✓   |
-| `goodsReceipts:create`   |   ✓   |       ✓       |                 |           |   ✓   |
-| `shipments:create`       |   ✓   |       ✓       |                 |           |   ✓   |
-| `suppliers:write`        |   ✓   |               |        ✓        |           |       |
-| `purchaseOrders:write`   |   ✓   |               |        ✓        |           |       |
-| `purchaseOrders:approve` |   ✓   |               |        ✓        |           |       |
-| `customers:write`        |   ✓   |               |                 |     ✓     |       |
-| `salesOrders:write`      |   ✓   |               |                 |     ✓     |       |
-| `reports:inventory`      |   ✓   |       ✓       |                 |           |       |
-| `reports:purchasing`     |   ✓   |               |        ✓        |           |       |
-| `reports:fulfilment`     |   ✓   |               |                 |     ✓     |       |
+| Permission                 | Admin | Inventory Mgr | Procurement Mgr | Sales Mgr | Staff |
+| -------------------------- | :---: | :-----------: | :-------------: | :-------: | :---: |
+| `users:manage`             |   ✓   |               |                 |           |       |
+| `settings:manage`          |   ✓   |               |                 |           |       |
+| `audit:read`               |   ✓   |               |                 |           |       |
+| `warehouses:manage`        |   ✓   |       ✓       |                 |           |       |
+| `categories:manage`        |   ✓   |       ✓       |                 |           |       |
+| `products:write`           |   ✓   |       ✓       |                 |           |       |
+| `stock:adjust`             |   ✓   |       ✓       |                 |           |       |
+| `stock:transfer`           |   ✓   |       ✓       |                 |           |   ✓   |
+| `goodsReceipts:create`     |   ✓   |       ✓       |                 |           |   ✓   |
+| `shipments:create`         |   ✓   |       ✓       |                 |           |   ✓   |
+| `suppliers:write`          |   ✓   |               |        ✓        |           |       |
+| `purchaseRequests:create`  |   ✓   |       ✓       |        ✓        |           |   ✓   |
+| `purchaseRequests:approve` |   ✓   |               |        ✓        |           |       |
+| `purchaseOrders:write`     |   ✓   |               |        ✓        |           |       |
+| `purchaseOrders:approve`   |   ✓   |               |        ✓        |           |       |
+| `customers:write`          |   ✓   |               |                 |     ✓     |       |
+| `salesOrders:write`        |   ✓   |               |                 |     ✓     |       |
+| `reports:inventory`        |   ✓   |       ✓       |                 |           |       |
+| `reports:purchasing`       |   ✓   |               |        ✓        |           |       |
+| `reports:fulfilment`       |   ✓   |               |                 |     ✓     |       |
 
 - **Read access:** any signed-in user can read master data, stock, purchase orders and sales orders. Reports need the matching `reports:*` permission, because inventory valuation exposes cost figures.
 - **Separation of duties:** a purchase order cannot be approved by the user who created it, unless that user is an admin. A procurement manager's own POs need approval from another procurement manager or an admin.
@@ -728,27 +762,28 @@ flowchart LR
 
 ### 6.3 Endpoints
 
-| Area            | Endpoints                                                                                                                                                                                                                                                                                              | Permission                          |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
-| Health          | `GET /health` (checks the DB ping)                                                                                                                                                                                                                                                                     | public                              |
-| Auth            | `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`, `POST /auth/change-password`                                                                                                                                                                                            | public / authenticated              |
-| Users           | `GET /users`, `POST /users`, `GET /users/:id`, `PATCH /users/:id` (name, role, isActive), `POST /users/:id/reset-password`                                                                                                                                                                             | `users:manage`                      |
-| Settings        | `GET /settings`, `PATCH /settings`                                                                                                                                                                                                                                                                     | read: any; write: `settings:manage` |
-| Audit           | `GET /audit-logs?entityType&entityId&actorId&from&to`                                                                                                                                                                                                                                                  | `audit:read`                        |
-| Warehouses      | `GET`, `POST /warehouses`, `GET`, `PATCH /warehouses/:id`                                                                                                                                                                                                                                              | write: `warehouses:manage`          |
-| Categories      | `GET`, `POST /categories`, `PATCH`, `DELETE /categories/:id` (only when unused)                                                                                                                                                                                                                        | write: `categories:manage`          |
-| Products        | `GET /products?search&categoryId&isActive&lowStock`, `POST`, `GET /products/:id` (with stock per warehouse), `PATCH /products/:id`                                                                                                                                                                     | write: `products:write`             |
-| Suppliers       | `GET`, `POST /suppliers`, `GET`, `PATCH /suppliers/:id` (detail includes open POs)                                                                                                                                                                                                                     | write: `suppliers:write`            |
-| Customers       | `GET`, `POST /customers`, `GET`, `PATCH /customers/:id` (detail includes open SOs)                                                                                                                                                                                                                     | write: `customers:write`            |
-| Stock           | `GET /stock/levels?search&warehouseId&categoryId&productId&status(low\|out\|available)&sort`, `PATCH /stock/levels/:id` (threshold override, `products:write`), `GET /stock/movements?productId&warehouseId&type&direction(in\|out)&from&to`                                                           | read: any                           |
-| Adjustments     | `GET /stock/adjustments?type&warehouseId`, `GET /stock/adjustments/:id`, `POST /stock/adjustments` (posts immediately), `POST /stock/opening`                                                                                                                                                          | write: `stock:adjust`               |
-| Transfers       | `GET`, `POST /stock-transfers`, `GET`, `PATCH`, `DELETE /stock-transfers/:id` (draft), `POST /stock-transfers/:id/dispatch`, `/receive`, `/cancel`                                                                                                                                                     | write: `stock:transfer`             |
-| Purchase orders | `GET`, `POST /purchase-orders`, `GET`, `PATCH`, `DELETE /purchase-orders/:id` (draft), `POST /purchase-orders/:id/submit`, `/cancel`, `/close`                                                                                                                                                         | `purchaseOrders:write`              |
-|                 | `POST /purchase-orders/:id/approve`, `/reject`                                                                                                                                                                                                                                                         | `purchaseOrders:approve`            |
-| Goods receipts  | `GET /goods-receipts?purchaseOrderId`, `POST /goods-receipts`, `GET /goods-receipts/:id`                                                                                                                                                                                                               | write: `goodsReceipts:create`       |
-| Sales orders    | `GET`, `POST /sales-orders`, `GET`, `PATCH`, `DELETE /sales-orders/:id` (draft), `POST /sales-orders/:id/confirm`, `/cancel`                                                                                                                                                                           | `salesOrders:write`                 |
-| Shipments       | `GET /shipments?salesOrderId`, `POST /shipments`, `GET /shipments/:id`                                                                                                                                                                                                                                 | write: `shipments:create`           |
-| Reports         | `GET /reports/dashboard` (figures limited to the caller's permissions), `GET /reports/inventory-valuation?warehouseId` and `/stock-turnover?from&to` (`reports:inventory`), `/purchasing-summary?from&to&groupBy` (`reports:purchasing`), `/fulfilment-summary?from&to&groupBy` (`reports:fulfilment`) | dashboard: any                      |
+| Area              | Endpoints                                                                                                                                                                                                                                                                                              | Permission                          |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
+| Health            | `GET /health` (checks the DB ping)                                                                                                                                                                                                                                                                     | public                              |
+| Auth              | `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`, `POST /auth/change-password`                                                                                                                                                                                            | public / authenticated              |
+| Users             | `GET /users`, `POST /users`, `GET /users/:id`, `PATCH /users/:id` (name, role, isActive), `POST /users/:id/reset-password`                                                                                                                                                                             | `users:manage`                      |
+| Settings          | `GET /settings`, `PATCH /settings`                                                                                                                                                                                                                                                                     | read: any; write: `settings:manage` |
+| Audit             | `GET /audit-logs?entityType&entityId&actorId&from&to`                                                                                                                                                                                                                                                  | `audit:read`                        |
+| Warehouses        | `GET`, `POST /warehouses`, `GET`, `PATCH /warehouses/:id`                                                                                                                                                                                                                                              | write: `warehouses:manage`          |
+| Categories        | `GET`, `POST /categories`, `PATCH`, `DELETE /categories/:id` (only when unused)                                                                                                                                                                                                                        | write: `categories:manage`          |
+| Products          | `GET /products?search&categoryId&isActive&lowStock`, `POST`, `GET /products/:id` (with stock per warehouse), `PATCH /products/:id`                                                                                                                                                                     | write: `products:write`             |
+| Suppliers         | `GET`, `POST /suppliers`, `GET`, `PATCH /suppliers/:id`; `GET /suppliers/:id/prices`, `PUT`/`DELETE /suppliers/:id/prices/:productId`; `GET /suppliers/:id/delivery-summary`; `GET /products/:id/supplier-prices`                                                                                      | write: `suppliers:write`            |
+| Customers         | `GET`, `POST /customers`, `GET`, `PATCH /customers/:id` (detail includes open SOs)                                                                                                                                                                                                                     | write: `customers:write`            |
+| Stock             | `GET /stock/levels?search&warehouseId&categoryId&productId&status(low\|out\|available)&sort`, `PATCH /stock/levels/:id` (threshold override, `products:write`), `GET /stock/movements?productId&warehouseId&type&direction(in\|out)&from&to`                                                           | read: any                           |
+| Adjustments       | `GET /stock/adjustments?type&warehouseId`, `GET /stock/adjustments/:id`, `POST /stock/adjustments` (posts immediately), `POST /stock/opening`                                                                                                                                                          | write: `stock:adjust`               |
+| Transfers         | `GET`, `POST /stock-transfers`, `GET`, `PATCH`, `DELETE /stock-transfers/:id` (draft), `POST /stock-transfers/:id/dispatch`, `/receive`, `/cancel`                                                                                                                                                     | write: `stock:transfer`             |
+| Purchase orders   | `GET /purchase-orders?search&status&open&overdue&supplierId&warehouseId&productId&sort`, `POST`, `GET`, `PATCH`/`DELETE /purchase-orders/:id` (draft), `POST /purchase-orders/:id/submit`, `/cancel` (no receipts yet), `/close` (partially received)                                                  | `purchaseOrders:write`              |
+|                   | `POST /purchase-orders/:id/approve`, `/reject`                                                                                                                                                                                                                                                         | `purchaseOrders:approve`            |
+| Purchase requests | `GET /purchase-requests?search&status&warehouseId&mine`, `POST`, `GET`, `PATCH`/`DELETE /purchase-requests/:id` (draft, requester), `POST /:id/submit`, `/cancel`; `POST /:id/approve`, `/reject` (`purchaseRequests:approve`); `POST /:id/convert` (`purchaseOrders:write`)                           | write: `purchaseRequests:create`    |
+| Goods receipts    | `GET /goods-receipts?search&purchaseOrderId&supplierId&warehouseId&issues&from&to`, `POST /goods-receipts`, `GET /goods-receipts/:id`                                                                                                                                                                  | write: `goodsReceipts:create`       |
+| Sales orders      | `GET`, `POST /sales-orders`, `GET`, `PATCH`, `DELETE /sales-orders/:id` (draft), `POST /sales-orders/:id/confirm`, `/cancel`                                                                                                                                                                           | `salesOrders:write`                 |
+| Shipments         | `GET /shipments?salesOrderId`, `POST /shipments`, `GET /shipments/:id`                                                                                                                                                                                                                                 | write: `shipments:create`           |
+| Reports           | `GET /reports/dashboard` (figures limited to the caller's permissions), `GET /reports/inventory-valuation?warehouseId` and `/stock-turnover?from&to` (`reports:inventory`), `/purchasing-summary?from&to&groupBy` (`reports:purchasing`), `/fulfilment-summary?from&to&groupBy` (`reports:fulfilment`) | dashboard: any                      |
 
 Reports are MongoDB aggregations over the source documents. Nothing is pre-aggregated, which is fast enough at SMB data volumes given the indexes above.
 
@@ -923,6 +958,7 @@ Vitest runs both apps and the shared package.
 | 17  | Generated SKUs `<category code>-00001` from a per-category counter; SKUs immutable                      | Readable, unique codes without manual effort; documents and history keep referring to the same SKU | Renaming a category code affects only new SKUs                                  |
 | 18  | Opening stock only before any other movement in that warehouse                                          | Keeps "opening" meaningful and auditable; later corrections are adjustments with a reason          | A late first registration must use an adjustment if anything moved already      |
 | 19  | Update schemas built from field definitions without defaults                                            | Zod applies defaults inside `.partial()`, which would silently overwrite stored values on PATCH    | Create schemas repeat the defaults explicitly                                   |
+| 20  | Outstanding = ordered − accepted; rejected and damaged units are recorded but not stocked               | Only accepted goods are usable; the supplier still owes what failed inspection                     | No quarantine stock; closing the PO is how a shortfall is written off           |
 
 Dependencies beyond the required stack are limited to: `react-hook-form` and `@hookform/resolvers` (shadcn forms), `@tanstack/react-table`, `pino` and `pino-http`, `helmet`, `cors`, `cookie-parser`, `express-rate-limit`, `jsonwebtoken`, `bcrypt`, and `mongodb-memory-server` (tests only).
 
@@ -938,7 +974,7 @@ Each phase ends with passing tests, an `IMPLEMENTATION_LOG.md` entry and a commi
 | **1. Foundation and auth** ✓              | Monorepo and tooling; `shared` package; Express app with config, logging, request IDs, error handling, `/health`; local and Docker MongoDB replica set; login, refresh rotation, logout, change password, bootstrap admin, RBAC, user management; web shell (layout, sidebar, route guards, role-aware dashboard); CI | Auth, RBAC and route-guard tests pass (unit, integration, E2E)                               |
 | **2. Master data and inventory engine** ✓ | Settings (company, currency); warehouses, categories, products (generated SKUs), suppliers, customers; stock levels, movement ledger, opening stock, adjustments (incl. stock counts), per-warehouse low-stock thresholds; list, detail and form pages with search, filters and pagination                            | SKU, stock calculation, consistency and concurrency tests pass; ledger always equals on-hand |
 | **3. Warehouse operations**               | Stock transfers (dispatch, receive), audit log                                                                                                                                                                                                                                                                        | Transfer invariant and concurrency tests pass                                                |
-| **4. Procurement**                        | Purchase orders with approval, goods receipts (partial), average cost, incoming quantities, document numbering                                                                                                                                                                                                        | PO lifecycle tests pass, including over-receipt rejection and cost recalculation             |
+| **4. Procurement** ✓                      | Supplier price lists, purchase requests with approval and conversion, purchase orders with approval, cancellation and closing, GRNs with accepted/rejected/damaged quantities and partial deliveries, supplier delivery history                                                                                       | Complete, partial, damaged, rejected, cancelled and concurrent receipt tests pass            |
 | **5. Order fulfilment**                   | Sales orders, reservations, shipments, cancellation and release, cost of goods shipped                                                                                                                                                                                                                                | Reservation race test passes; invariants hold                                                |
 | **6. Dashboard and reports**              | Dashboard, inventory valuation, purchasing summary, fulfilment summary, stock turnover                                                                                                                                                                                                                                | Report figures verified against seeded documents in tests                                    |
 | **7. Hardening and delivery**             | Seed data, Playwright E2E suite, full Docker stack, CI with E2E, accessibility and responsive pass, comprehensive README                                                                                                                                                                                              | E2E suite green in CI; fresh clone runs with documented commands                             |

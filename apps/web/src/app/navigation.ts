@@ -2,6 +2,9 @@ import {
   ArrowLeftRight,
   Boxes,
   ClipboardList,
+  ClipboardPen,
+  FileText,
+  PackageCheck,
   Contact,
   LayoutDashboard,
   Package,
@@ -40,7 +43,15 @@ export const NAV_SECTIONS: NavSection[] = [
       { to: '/warehouses', label: 'Warehouses', icon: Warehouse },
     ],
   },
-  { label: 'Purchasing', items: [{ to: '/suppliers', label: 'Suppliers', icon: Truck }] },
+  {
+    label: 'Purchasing',
+    items: [
+      { to: '/purchase-requests', label: 'Purchase requests', icon: ClipboardPen },
+      { to: '/purchase-orders', label: 'Purchase orders', icon: FileText },
+      { to: '/goods-receipts', label: 'Goods receipts', icon: PackageCheck },
+      { to: '/suppliers', label: 'Suppliers', icon: Truck },
+    ],
+  },
   { label: 'Sales', items: [{ to: '/customers', label: 'Customers', icon: Contact }] },
   {
     label: 'Administration',

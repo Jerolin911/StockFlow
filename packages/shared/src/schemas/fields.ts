@@ -54,7 +54,10 @@ export const codeSchema = (min: number, max: number) =>
 
 export const statusFilter = z.enum(['active', 'inactive']).optional();
 
-export const sortParam = <T extends readonly string[]>(fields: T, fallback: T[number]) =>
+export const sortParam = <T extends readonly string[]>(
+  fields: T,
+  fallback: T[number] | `-${T[number]}`,
+) =>
   z
     .string()
     .regex(new RegExp(`^-?(${fields.join('|')})$`), 'Invalid sort field')

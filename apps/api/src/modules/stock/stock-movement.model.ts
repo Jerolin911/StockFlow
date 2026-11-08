@@ -1,5 +1,5 @@
 import { Schema, model } from 'mongoose';
-import { MOVEMENT_TYPES, STOCK_DOCUMENT_TYPES } from '@stockflow/shared';
+import { MOVEMENT_REFERENCE_TYPES, MOVEMENT_TYPES } from '@stockflow/shared';
 
 /** Append-only ledger: one row per change to a stock level. Never updated or deleted. */
 const stockMovementSchema = new Schema(
@@ -11,7 +11,7 @@ const stockMovementSchema = new Schema(
     balanceAfter: { type: Number, required: true, min: 0 },
     unitCost: { type: Number, required: true, min: 0 },
     reference: {
-      type: { type: String, enum: STOCK_DOCUMENT_TYPES, required: true },
+      type: { type: String, enum: MOVEMENT_REFERENCE_TYPES, required: true },
       id: { type: Schema.Types.ObjectId, required: true },
       number: { type: String, required: true },
     },

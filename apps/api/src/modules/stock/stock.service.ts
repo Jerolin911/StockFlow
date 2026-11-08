@@ -1,5 +1,5 @@
 import type { ClientSession, Types } from 'mongoose';
-import type { MovementType, StockDocumentType } from '@stockflow/shared';
+import type { MovementReferenceType, MovementType } from '@stockflow/shared';
 import { Product } from '../products/product.model.js';
 import { StockLevel } from './stock-level.model.js';
 import { StockMovement } from './stock-movement.model.js';
@@ -11,7 +11,7 @@ export interface MovementInput {
   /** Signed: positive adds stock, negative removes it. Never zero. */
   quantity: number;
   unitCost: number;
-  reference: { type: StockDocumentType; id: Types.ObjectId; number: string };
+  reference: { type: MovementReferenceType; id: Types.ObjectId; number: string };
   createdBy: Types.ObjectId;
 }
 

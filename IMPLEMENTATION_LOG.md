@@ -212,3 +212,101 @@
 - Stock transfers and the audit log were not part of this phase's request. They are scheduled as roadmap phase 3 (warehouse operations).
 - Docker images and CI are still unverified (no running Docker engine, no Git remote).
 - The web bundle is now 819 kB minified (250 kB gzipped). Route-level code splitting is still pending.
+
+## Phase 3 — Procurement: purchase requests to goods receipts (2026-11-08)
+
+Delivered under roadmap phase 4 (Procurement). Phase 3 (warehouse operations: transfers and audit log) hasn't been requested yet.
+
+### Completed
+
+- **Permissions:**
+  - `purchaseRequests:create`: admin, inventory manager, procurement manager, staff.
+  - `purchaseRequests:approve`: admin, procurement manager.
+- **Supplier price lists:** supplier × product unit cost and supplier SKU, managed on the supplier page (`suppliers:write`). A product's page shows every supplier's price and marks the lowest.
+- **Purchase requests:**
+  - Draft, then submitted, then approved, rejected or cancelled.
+  - The requester edits, submits and deletes their own drafts.
+  - An approver can't approve their own request unless they're an admin.
+  - An approved request converts into a draft PO for a chosen supplier, in one transaction, and becomes "ordered". Deleting or cancelling that PO returns the request to approved.
+  - Each request keeps a history of actions with who did them and when.
+- **Purchase orders:**
+  - Draft (editable, deletable), pending approval, approved, then partially received or received; closed or cancelled.
+  - Lines priced from the supplier's price list, else the product's cost price; tax per line; expected date from the supplier's lead time.
+  - Atomic status transitions with reasons for reject, cancel and close.
+  - An approver can't approve their own order unless they're an admin.
+  - Cancelling is allowed only before the first receipt; after that, "close remaining" with a reason.
+  - Overdue flag; filters for open, overdue, product and supplier; full history.
+- **Goods receipts (GRN):**
+  - Posted in one transaction: the order lines are checked against what's outstanding and updated, and only accepted units become RECEIPT movements that update the average cost.
+  - Rejected and damaged units are recorded on the GRN and the order line but don't count towards what's received.
+  - A reason is required for rejected or damaged goods.
+  - The receipt date can't be in the future or before the order date.
+  - Concurrent receipts against the same order conflict and are retried against fresh quantities.
+- **Supplier delivery history:** receipts keep the order's expected date. The summary shows on-time and late deliveries, accepted, rejected and damaged units, and open and overdue orders.
+- **Web:**
+  - Purchase request list, form and detail, with approve, reject, cancel and convert (supplier choice with a price preview).
+  - Purchase order list, form and detail, with an editor showing supplier or product prices and line totals including tax. The detail page shows ordered, received, rejected, damaged and outstanding per line, the receipts and the history.
+  - Goods receipt form (accepted, rejected and damaged per line, "accept all outstanding", a preview of units added), list and detail.
+  - Supplier detail page with delivery statistics, price list editor, orders and delivery history.
+  - Product detail gains "On order" and "Supplier prices" cards and a "Request stock" action.
+  - Dashboard tiles for approvals, open orders and overdue deliveries.
+  - Ledger rows link to goods receipts.
+- **Seed:** supplier price lists; purchase orders that are fully received, partially received with damaged units, overdue, and awaiting approval; one request awaiting approval.
+
+### Fixed or improved during this phase
+
+- Toasts moved from the top-right to the bottom-right. In the top-right they covered the account menu, and hovering a toast pauses its auto-dismiss, so the menu could become unreachable. This surfaced in E2E.
+- The purchase order detail page puts its history below the lines on screens narrower than 2xl, so the eight-column lines table doesn't scroll sideways at 1280 px.
+
+### Changed files
+
+- `packages/shared/src/`: `permissions.ts`, `schemas/{procurement,stock,fields}.ts`, `dto-procurement.ts`, `dto.ts`, `index.ts`
+- `apps/api/src/`:
+  - `modules/purchasing/{models,common,purchase-requests,purchase-orders,goods-receipts,supplier-prices}.ts`
+  - `modules/stock/{stock-movement.model,stock.service}.ts`
+  - `lib/counters.ts`
+  - `app.ts`
+- `apps/api/scripts/seed-data.ts`; `apps/api/tests/{procurement.test,fixtures}.ts`
+- `apps/web/src/`:
+  - `features/purchasing/**`
+  - `components/BackLink.tsx`
+  - `features/catalog/ProductDetailPage.tsx`
+  - `features/dashboard/DashboardPage.tsx`
+  - `features/partners/PartnersPage.tsx`
+  - `features/stock/MovementsTable.tsx`
+  - `app/{router,navigation}.ts(x)`
+  - `main.tsx`
+- `apps/web/e2e/procurement.spec.ts`
+- `docs/ARCHITECTURE.md`, `README.md`
+
+### Test results
+
+- `packages/shared`: 18 unit tests passed.
+- `apps/api`: 92 integration tests passed, 17 of them new for procurement. They cover:
+  - Supplier pricing with fallback to cost price; totals and tax; expected date from lead time; price permissions.
+  - Requests: full flow to a draft PO; converting twice blocked; deleting the PO reopens the request; self-approval blocked; role permissions; reject and cancel; editing only drafts; inactive products rejected.
+  - Orders: submit, reject, resubmit and approve with history; self-approval blocked and admin self-approval allowed; cancel before receipts and refused after; receiving refused unless approved.
+  - Complete delivery: stock, RECEIPT movement, average cost, order received.
+  - Partial deliveries across three receipts, with outstanding quantities kept open and over-receipt rejected.
+  - Accepted 12, rejected 3 and damaged 5 of 20: only 12 stocked and 8 still outstanding; the replacement delivery completes the order.
+  - A fully rejected delivery changes no stock.
+  - Receipt validation: reason, empty, future date, foreign line, permissions.
+  - Closing a partially received order.
+  - Six concurrent receipts of 2 against 5 outstanding: exactly 2 succeed and 4 are received.
+  - Supplier delivery summary with on-time, late, damaged, open and overdue counts; overdue and open filters.
+  - Every test ends with the ledger consistency check. The procurement suite was run three extra times to check for flakiness.
+- `apps/web`: 6 unit tests passed.
+- Playwright: 23 E2E tests passed, 4 of them new. They cover:
+  - Staff request → procurement approval and conversion (supplier price shown) → submit (self-approval blocked) → admin approval → staff partial receipt with damaged units (outstanding 4, stock +6) → "accept all outstanding" completes the order (stock +10).
+  - Cancelling an approved order with a required reason.
+  - Closing a partially received order.
+  - The supplier page's delivery history and price list.
+- `npm run lint`, `npm run typecheck`, `prettier --check` and `npm run build` pass. All 10 architecture diagrams render.
+- Manual check in the browser: purchase order detail at 1280 px with no table overflow, the close dialog, and dashboard purchasing tiles.
+
+### Pending issues
+
+- Stock transfers and the audit log (roadmap phase 3) are still to do.
+- Docker images and CI are still unverified (no running Docker engine, no Git remote).
+- The web bundle is now 890 kB minified (265 kB gzipped). Route-level code splitting would help.
+- Opening a link after signing in as a different user can land on "Access denied", because the app returns to the previous session's page. Harmless, but sending users to the dashboard when the page isn't permitted would be friendlier.

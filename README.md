@@ -63,6 +63,14 @@ The demo password is `DEMO_PASSWORD` in [apps/api/scripts/seed-data.ts](apps/api
 - Low stock: available ≤ threshold in a warehouse that holds the product. The threshold is the product's, or a per-warehouse override.
 - Leaving the SKU blank generates `<category code>-00001`; SKUs can't be changed afterwards.
 
+## Procurement rules
+
+- Purchase requests → approval → purchase order for a chosen supplier → approval → goods receipts. Nobody approves their own request or order unless they're an admin.
+- Order lines default to the supplier's price list, else the product's cost price; the expected date defaults from the supplier's lead time.
+- Each goods receipt line records accepted, rejected and damaged quantities. Only accepted units enter stock. Outstanding = ordered − accepted, so rejected and damaged units remain outstanding.
+- Orders can be cancelled until the first receipt; after that, "close remaining" ends what's outstanding.
+- No invoices or payments are handled; order totals are informational.
+
 ## Checks
 
 ```bash

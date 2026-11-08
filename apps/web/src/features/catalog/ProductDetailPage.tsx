@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router';
-import { ArrowLeft, Pencil, SlidersHorizontal, PackagePlus } from 'lucide-react';
+import { ArrowLeft, ClipboardPen, Pencil, SlidersHorizontal, PackagePlus } from 'lucide-react';
 import { toast } from 'sonner';
 import { basisPointsToPercent, type StockLevelDto } from '@stockflow/shared';
 import { DialogActions, FormAlert, FormDialog } from '@/components/form-parts';
@@ -26,7 +26,9 @@ import { useMoney } from '@/features/settings/api';
 import { useMovements, useStockLevels, useUpdateThreshold } from '@/features/stock/api';
 import { MovementsTable } from '@/features/stock/MovementsTable';
 import { ApiError } from '@/lib/api-client';
-import { formatDateTime } from '@/lib/format';
+import { formatDate, formatDateTime } from '@/lib/format';
+import { PurchaseOrderStatusBadge } from '@/features/purchasing/components';
+import { useProductSupplierPrices, usePurchaseOrders } from '@/features/purchasing/api';
 import { useProduct } from './api';
 import { ProductFormDialog } from './ProductFormDialog';
 
@@ -35,6 +37,7 @@ export function ProductDetailPage() {
   const product = useProduct(id);
   const canWrite = usePermission('products:write');
   const canAdjust = usePermission('stock:adjust');
+  const canRequest = usePermission('purchaseRequests:create');
   const money = useMoney();
   const [editing, setEditing] = useState(false);
   const [thresholdLevel, setThresholdLevel] = useState<StockLevelDto | null>(null);
@@ -74,6 +77,16 @@ export function ProductDetailPage() {
         }
         actions={
           <>
+            {canRequest ? (
+              <Button variant="outline" asChild>
+                <Link
+                  to={`/purchase-requests/new?productId=${p.id}${p.reorderQuantity > 0 ? `&quantity=${p.reorderQuantity}` : ''}`}
+                >
+                  <ClipboardPen />
+                  Request stock
+                </Link>
+              </Button>
+            ) : null}
             {canAdjust ? (
               <>
                 <Button variant="outline" asChild>
@@ -216,6 +229,11 @@ export function ProductDetailPage() {
         />
       </Card>
 
+      <div className="mt-6 grid gap-6 lg:grid-cols-2">
+        <OnOrderCard productId={p.id} unit={p.unit} />
+        <SupplierPricesCard productId={p.id} />
+      </div>
+
       <ProductFormDialog open={editing} onOpenChange={setEditing} product={p} />
       <FormDialog
         open={thresholdLevel !== null}
@@ -302,5 +320,112 @@ function ThresholdForm({ level, onDone }: { level: StockLevelDto; onDone: () => 
         onCancel={onDone}
       />
     </>
+  );
+}
+
+function OnOrderCard({ productId, unit }: { productId: string; unit: string }) {
+  const orders = usePurchaseOrders({ productId, open: 'true', pageSize: 20, sort: 'expectedDate' });
+  const rows = (orders.data?.data ?? []).map((po) => ({
+    po,
+    line: po.lines.find((l) => l.productId === productId)!,
+  }));
+  const incoming = rows.reduce((sum, r) => sum + r.line.pendingQuantity, 0);
+
+  return (
+    <Card className="gap-0 overflow-hidden pb-0">
+      <CardHeader className="pb-4">
+        <CardTitle>On order</CardTitle>
+        {incoming > 0 ? (
+          <p className="text-muted-foreground text-sm">
+            {incoming} {unit} outstanding on open purchase orders
+          </p>
+        ) : null}
+      </CardHeader>
+      <Table>
+        <TableBody>
+          {rows.length === 0 ? (
+            <TableRow>
+              <TableCell className="text-muted-foreground py-6 text-center text-sm">
+                {orders.isPending ? 'Loading…' : 'Not on any open purchase order.'}
+              </TableCell>
+            </TableRow>
+          ) : (
+            rows.map(({ po, line }) => (
+              <TableRow key={po.id}>
+                <TableCell className="pl-6">
+                  <Link
+                    to={`/purchase-orders/${po.id}`}
+                    className="font-mono text-xs font-medium hover:underline"
+                  >
+                    {po.number}
+                  </Link>
+                  <div className="text-muted-foreground text-xs">
+                    {po.supplier.name} · {po.warehouse.code}
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <PurchaseOrderStatusBadge status={po.status} />
+                </TableCell>
+                <TableCell className={po.isOverdue ? 'text-red-700' : undefined}>
+                  {formatDate(po.expectedDate)}
+                </TableCell>
+                <TableCell className="pr-6 text-right font-medium tabular-nums">
+                  {line.pendingQuantity}
+                </TableCell>
+              </TableRow>
+            ))
+          )}
+        </TableBody>
+      </Table>
+    </Card>
+  );
+}
+
+function SupplierPricesCard({ productId }: { productId: string }) {
+  const prices = useProductSupplierPrices(productId);
+  const money = useMoney();
+  return (
+    <Card className="gap-0 overflow-hidden pb-0">
+      <CardHeader className="pb-4">
+        <CardTitle>Supplier prices</CardTitle>
+      </CardHeader>
+      <Table>
+        <TableBody>
+          {(prices.data ?? []).length === 0 ? (
+            <TableRow>
+              <TableCell className="text-muted-foreground py-6 text-center text-sm">
+                {prices.isPending ? 'Loading…' : 'No supplier has a price for this product yet.'}
+              </TableCell>
+            </TableRow>
+          ) : (
+            prices.data!.map((price, index) => (
+              <TableRow key={price.supplier.id}>
+                <TableCell className="pl-6">
+                  <Link
+                    to={`/suppliers/${price.supplier.id}`}
+                    className="font-medium hover:underline"
+                  >
+                    {price.supplier.name}
+                  </Link>
+                  {price.supplierSku ? (
+                    <div className="text-muted-foreground font-mono text-xs">
+                      {price.supplierSku}
+                    </div>
+                  ) : null}
+                </TableCell>
+                <TableCell>
+                  {index === 0 && prices.data!.length > 1 ? (
+                    <StatusBadge tone="green">Lowest</StatusBadge>
+                  ) : null}
+                </TableCell>
+                <TableCell className="pr-6 text-right tabular-nums">
+                  {money(price.unitCost)}
+                </TableCell>
+              </TableRow>
+            ))
+          )}
+        </TableBody>
+      </Table>
+    </Card>
   );
 }

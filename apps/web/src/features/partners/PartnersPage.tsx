@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router';
 import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus } from 'lucide-react';
@@ -156,7 +157,13 @@ export function PartnersPage({ kind }: { kind: PartnerKind }) {
                 <TableRow key={p.id}>
                   <TableCell className="pl-4 font-mono text-xs font-medium">{p.code}</TableCell>
                   <TableCell>
-                    <div className="font-medium">{p.name}</div>
+                    {kind === 'suppliers' ? (
+                      <Link to={`/suppliers/${p.id}`} className="font-medium hover:underline">
+                        {p.name}
+                      </Link>
+                    ) : (
+                      <div className="font-medium">{p.name}</div>
+                    )}
                     {p.contactName ? (
                       <div className="text-muted-foreground text-xs">{p.contactName}</div>
                     ) : null}

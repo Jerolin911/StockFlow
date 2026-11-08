@@ -12,6 +12,13 @@ import { createAuthRouter } from './modules/auth/auth.routes.js';
 import { createCategoriesRouter } from './modules/categories/categories.js';
 import { customers, suppliers } from './modules/partners/partners.js';
 import { createProductsRouter } from './modules/products/products.js';
+import { createGoodsReceiptsRouter } from './modules/purchasing/goods-receipts.js';
+import { createPurchaseOrdersRouter } from './modules/purchasing/purchase-orders.js';
+import { createPurchaseRequestsRouter } from './modules/purchasing/purchase-requests.js';
+import {
+  createProductSupplierPricesRouter,
+  createSupplierPurchasingRouter,
+} from './modules/purchasing/supplier-prices.js';
 import { createSettingsRouter } from './modules/settings/settings.js';
 import { createStockRouter } from './modules/stock/stock.routes.js';
 import { createUsersRouter } from './modules/users/users.routes.js';
@@ -66,10 +73,16 @@ export function createApp(): Express {
   api.use('/settings', createSettingsRouter());
   api.use('/warehouses', createWarehousesRouter());
   api.use('/categories', createCategoriesRouter());
+  // Nested routers first so their paths aren't treated as unknown ids by the parent router.
+  api.use('/products/:productId/supplier-prices', createProductSupplierPricesRouter());
   api.use('/products', createProductsRouter());
+  api.use('/suppliers/:supplierId', createSupplierPurchasingRouter());
   api.use('/suppliers', suppliers.router());
   api.use('/customers', customers.router());
   api.use('/stock', createStockRouter());
+  api.use('/purchase-requests', createPurchaseRequestsRouter());
+  api.use('/purchase-orders', createPurchaseOrdersRouter());
+  api.use('/goods-receipts', createGoodsReceiptsRouter());
 
   app.use('/api/v1', api);
   app.use(notFoundHandler);

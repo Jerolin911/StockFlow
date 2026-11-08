@@ -72,7 +72,11 @@ export function MovementsTable({
               <TableCell>{MOVEMENT_TYPE_LABELS[m.type]}</TableCell>
               <TableCell>
                 <Link
-                  to={`/stock/adjustments/${m.reference.id}`}
+                  to={
+                    m.reference.type === 'goodsReceipt'
+                      ? `/goods-receipts/${m.reference.id}`
+                      : `/stock/adjustments/${m.reference.id}`
+                  }
                   className="font-mono text-xs hover:underline"
                 >
                   {m.reference.number}
