@@ -41,7 +41,7 @@ function LowStockCard({ className }: { className: string }) {
             : 'Products at or below their threshold'}
         </CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-3">
+      <CardContent className="grid grid-cols-1 gap-3">
         {low.isPending ? (
           <div className="grid gap-2">
             {Array.from({ length: 4 }, (_, i) => (
@@ -190,7 +190,7 @@ export function DashboardPage() {
         )}
       </section>
 
-      <div className="mb-6 grid gap-6 lg:grid-cols-3">
+      <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>
             <CardTitle>Warehouse distribution</CardTitle>
@@ -223,8 +223,8 @@ export function DashboardPage() {
         <PendingWorkCard overview={o} />
       </div>
 
-      <div className="mb-6 grid gap-6 lg:grid-cols-3">
-        <Card className="gap-0 overflow-hidden pb-0 lg:col-span-2">
+      <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <Card className="min-w-0 gap-0 overflow-hidden pb-0 lg:col-span-2">
           <CardHeader className="pb-4">
             <div className="flex items-center justify-between gap-2">
               <CardTitle>Recent inventory movements</CardTitle>
@@ -244,10 +244,10 @@ export function DashboardPage() {
             emptyMessage="No stock movements yet."
           />
         </Card>
-        <LowStockCard className="" />
+        <LowStockCard className="min-w-0" />
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {isAdmin ? <UsersCard /> : null}
         <AccessCard
           role={user.role}

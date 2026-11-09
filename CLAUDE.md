@@ -72,6 +72,7 @@ Zod gotcha: field helpers and update schemas have no `.default()`, because Zod 4
 - Returns (`modules/returns`): customer returns are capped by the order line's `returnedQuantity` counter, received into quarantine (`CUSTOMER_RETURN`), then inspected (restocked units `RELEASE` to usable at their shipped cost). Supplier returns leave from their line's source bucket at dispatch (`SUPPLIER_RETURN`).
 - Notifications (`modules/notifications`): call `notify(recipients, input, session)` inside the posting transaction so they exist only if the action commits. Recipients are permissions (resolved to roles) and/or user ids; the actor and inactive users are skipped. Low-stock alerts come from `stock.service.ts` when available crosses the threshold downwards.
 - Reports (`modules/reports`): read-only aggregations over live records; `resolveRange` defaults to the last 30 days, `sendTable`/`sendCsv` handle paging and `format=csv`. Value figures need `reports:inventory`.
+- Audit log (`modules/audit/audit.ts`): `auditTrail()` on the API router records, after the response, every successful mutation and every `/auth/login` attempt (not refresh, logout or notifications). New routes are covered automatically; `entityId` comes from `:id` or the created record's `data.id`.
 - History is never edited or deleted: a posted adjustment is corrected by `POST /stock/adjustments/:id/reverse`, which posts the opposite quantities and links both documents.
 - `apps/api/tests/fixtures.ts` `expectLedgerConsistent()` runs after every stock-touching test (in `afterEach`). It checks each bucket's ledger = its balance, reserved = what open orders hold, order-line counters = their shipments and returns, and that `SHIPMENT`, `TRANSFER_*`, `CUSTOMER_RETURN` and `SUPPLIER_RETURN` movements match their documents. Never set `onHand`/`reserved` directly in tests; go through the API or services.
 
@@ -79,6 +80,9 @@ Zod gotcha: field helpers and update schemas have no `.default()`, because Zod 4
 
 - API tests use Supertest against `createApp()` with a `mongodb-memory-server` replica set. The global setup provides the URI, each file gets its own database, and collections are cleared before each test. Helpers: `tokenFor(app, role)`, `api(app, token)`, and fixture creators in `tests/fixtures.ts`.
 - Concurrency tests fire parallel requests and assert exactly-N successes. Rerun a suite a few times after touching transactional code.
+- Web component tests opt into jsdom with a `// @vitest-environment jsdom` first line; `src/test/setup.ts` adds jest-dom matchers and cleanup. Mock `apiRequest` from `@/lib/api-client` rather than fetch. Use `fireEvent.change` with fake timers.
+- `tests/security.test.ts` covers cross-cutting API checks (401 on every router, input hardening, headers, audit entries, `explain()` index use); add new router prefixes to its list.
+- `e2e/responsive.spec.ts` fails if any listed page scrolls horizontally at 375 or 768 px (tables scroll inside their container and are exempt). Set `SCREENSHOT_DIR` to save screenshots. Inside grids, give cards `min-w-0` or use `grid-cols-1` so long text truncates.
 - E2E (`apps/web/e2e`) runs serially with one worker against one seeded database, so specs see each other's changes. Read before/after values within a test instead of hard-coding stock figures. Assert statuses via the badge next to the `h1` (status words also appear in table headers, history and progress strips).
 - The seed test (`tests/seed.test.ts`) pins counts such as 5 low-stock combinations, the per-status sales orders and the warehouse-ops summary; update it when seed data changes.
 
@@ -96,4 +100,4 @@ Zod gotcha: field helpers and update schemas have no `.default()`, because Zod 4
 
 - MongoDB must run as a replica set (transactions).
 - The root `package.json` overrides `vite` to `^7.3.7`; Vitest 4 would otherwise pull in Vite 8.
-- Docker (`docker-compose.yml`: mongo replica set, api, nginx web on :8080) and CI (`.github/workflows/ci.yml`) exist but haven't been run in this environment yet.
+- Docker (`docker-compose.yml`: mongo replica set, api, nginx web on :8080) and CI (`.github/workflows/ci.yml`) exist but haven't been run in this environment yet: the Docker Desktop engine wasn't running, and there is no Git remote.

@@ -113,3 +113,17 @@ export const listNotificationsQuerySchema = paginationQuerySchema.extend({
 });
 
 export type ListNotificationsQuery = z.infer<typeof listNotificationsQuerySchema>;
+
+// Audit log
+
+export const listAuditLogsQuerySchema = paginationQuerySchema.extend({
+  actorId: objectIdSchema.optional(),
+  entityType: z.string().trim().max(60).optional(),
+  entityId: z.string().trim().max(60).optional(),
+  outcome: z.enum(['failed']).optional(),
+  search: z.string().trim().max(100).optional(),
+  from: isoDate.optional(),
+  to: isoDate.optional(),
+});
+
+export type ListAuditLogsQuery = z.infer<typeof listAuditLogsQuerySchema>;

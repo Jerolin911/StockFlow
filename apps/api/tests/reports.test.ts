@@ -285,7 +285,10 @@ describe('inventory analytics', () => {
     expect(res.headers['content-disposition']).toBe(
       'attachment; filename="inventory-availability.csv"',
     );
-    const lines = res.text.replace(/^\uFEFF/, '').trim().split('\r\n');
+    const lines = res.text
+      .replace(/^\uFEFF/, '')
+      .trim()
+      .split('\r\n');
     expect(lines[0]).toBe(
       'SKU,Product,Category,On hand,Reserved,Available,Quarantine,Incoming,In transit,Reorder point,Status',
     );

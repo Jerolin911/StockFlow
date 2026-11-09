@@ -186,3 +186,17 @@ export interface PendingApprovalsDto {
   stockCounts: number;
   total: number;
 }
+
+export interface AuditLogDto {
+  id: string;
+  at: string;
+  /** Null for requests with no identity; failed sign-ins carry only the email tried. */
+  actor: { id: string | null; name: string; role: string; email: string } | null;
+  method: string;
+  action: string;
+  path: string;
+  entityType: string;
+  entityId: string | null;
+  status: number;
+  ip: string;
+}

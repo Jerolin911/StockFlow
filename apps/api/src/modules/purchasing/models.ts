@@ -114,6 +114,8 @@ purchaseOrderSchema.index({ status: 1, orderDate: -1 });
 purchaseOrderSchema.index({ 'supplier._id': 1, orderDate: -1 });
 purchaseOrderSchema.index({ warehouseId: 1, status: 1 });
 purchaseOrderSchema.index({ 'lines.productId': 1, status: 1 });
+// Reports: orders raised in a date range.
+purchaseOrderSchema.index({ orderDate: -1 });
 
 export const PurchaseOrder = model('PurchaseOrder', purchaseOrderSchema);
 export type PurchaseOrderRecord = InferSchemaType<typeof purchaseOrderSchema> & {

@@ -485,14 +485,19 @@ counters {                    // gap-free document numbering inside the posting 
 // produces numbers like PO-2026-00042
 
 auditLogs {
-  actorId: Ref<users>; actorName: string
-  action: string              // 'purchaseOrder.approve', 'user.create', ...
-  entityType: string; entityId: ObjectId; entityLabel?: string   // e.g. 'PO-2026-00042'
-  changes?: object            // changed fields (before/after) for edits
-  ip?: string
-  createdAt: Date
+  at: Date
+  actor?: { _id: Ref<users>; name: string; role: Role; email: string }   // email only for failed sign-ins
+  method: 'POST' | 'PATCH' | 'PUT' | 'DELETE'
+  action: string              // route pattern, e.g. '/purchase-orders/:id/approve'
+  path: string                // the request path
+  entityType: string          // first path segment, e.g. 'purchase-orders'
+  entityId?: string           // :id, or the id of the created record
+  status: number              // HTTP status (sign-in failures are recorded too)
+  ip: string; requestId: string
 }
-// indexes: { entityType: 1, entityId: 1, createdAt: -1 }, { actorId: 1, createdAt: -1 }, { createdAt: -1 }
+// written after the response by the auditTrail() middleware: successful mutations and every sign-in attempt
+// (not refresh, logout or notification reads)
+// indexes: { at: -1 }, { 'actor._id': 1, at: -1 }, { entityType: 1, at: -1 }, { entityId: 1, at: -1 }
 ```
 
 #### Master data
@@ -960,7 +965,7 @@ flowchart LR
 | Auth              | `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`, `POST /auth/change-password`                                                                                                                                                                                                                                                                                                                                                                                  | public / authenticated              |
 | Users             | `GET /users`, `POST /users`, `GET /users/:id`, `PATCH /users/:id` (name, role, isActive), `POST /users/:id/reset-password`                                                                                                                                                                                                                                                                                                                                                                   | `users:manage`                      |
 | Settings          | `GET /settings`, `PATCH /settings`                                                                                                                                                                                                                                                                                                                                                                                                                                                           | read: any; write: `settings:manage` |
-| Audit             | `GET /audit-logs?entityType&entityId&actorId&from&to`                                                                                                                                                                                                                                                                                                                                                                                                                                        | `audit:read`                        |
+| Audit             | `GET /audit-logs?search&entityType&entityId&actorId&outcome=failed&from&to&page&pageSize`                                                                                                                                                                                                                                                                                                                                                                                                    | `audit:read`                        |
 | Warehouses        | `GET`, `POST /warehouses`, `GET`, `PATCH /warehouses/:id`                                                                                                                                                                                                                                                                                                                                                                                                                                    | write: `warehouses:manage`          |
 | Categories        | `GET`, `POST /categories`, `PATCH`, `DELETE /categories/:id` (only when unused)                                                                                                                                                                                                                                                                                                                                                                                                              | write: `categories:manage`          |
 | Products          | `GET /products?search&categoryId&isActive&lowStock`, `POST`, `GET /products/:id` (with stock per warehouse), `PATCH /products/:id`                                                                                                                                                                                                                                                                                                                                                           | write: `products:write`             |
@@ -1129,8 +1134,9 @@ Vitest runs both apps and the shared package.
 | API integration | Vitest + Supertest + `mongodb-memory-server` (replica set) | Each workflow end to end through HTTP. Covers auth (login, refresh rotation, reuse detection, deactivation), RBAC denials, the PO lifecycle and partial receipts, SO reserve, ship and cancel, adjustments, transfers |
 | Concurrency     | Same harness                                               | Parallel confirms, shipments and dispatches competing for the last units: exactly one succeeds, invariants hold                                                                                                       |
 | Invariants      | Test helper                                                | After each workflow test: ledger matches `onHand`, reservations match open SO lines, line quantities stay within bounds                                                                                               |
-| Web component   | Vitest + Testing Library                                   | `LineItemsEditor`, `MoneyInput`, API client refresh logic                                                                                                                                                             |
-| E2E             | Playwright against the Docker stack with seed data         | Login; PO create → approve → receive → stock increases; SO create → confirm → ship → stock decreases; transfer dispatch → receive; role-based visibility                                                              |
+| Web component   | Vitest + Testing Library (jsdom per file)                  | Charts, sales and quantity line validation, reason dialog, history, search debounce, route guards, notification bell                                                                                                  |
+| Security        | API harness                                                | 401 on every router, admin-only areas, no role escalation, NoSQL operator and ReDoS inputs, body limits, no stack traces, headers, bcrypt, audit entries, index use via `explain()`                                   |
+| E2E             | Playwright against a seeded in-memory API and Vite         | Login; PO create → approve → receive → stock increases; SO create → confirm → ship → stock decreases; transfer dispatch → receive; role-based visibility; no horizontal overflow at 375 px and 768 px                 |
 
 ### 9.2 Docker and CI
 
@@ -1194,4 +1200,4 @@ Each phase ends with passing tests, an `IMPLEMENTATION_LOG.md` entry and a commi
 | **4. Procurement** ✓                            | Supplier price lists, purchase requests with approval and conversion, purchase orders with approval, cancellation and closing, GRNs with accepted/rejected/damaged quantities and partial deliveries, supplier delivery history                                                                                       | Complete, partial, damaged, rejected, cancelled and concurrent receipt tests pass                |
 | **5. Order fulfilment** ✓                       | Sales orders with pricing and discounts, availability checks, reservations, pick lists, short picks, packing, dispatch, delivery tracking, partial fulfilment, cancellation and release, order history                                                                                                                | Complete, partial, cancelled, insufficient-stock and concurrent reservation tests pass           |
 | **6. Dashboard, analytics and notifications** ✓ | Operational dashboard; inventory, procurement and sales analytics with filters, date ranges, pagination and CSV; per-user notifications from workflows and low-stock alerts; pending approvals                                                                                                                        | Report figures verified against known records in tests; notifications only for committed actions |
-| **7. Hardening and delivery**                   | Seed data, Playwright E2E suite, full Docker stack, CI with E2E, accessibility and responsive pass, comprehensive README                                                                                                                                                                                              | E2E suite green in CI; fresh clone runs with documented commands                                 |
+| **7. Hardening and delivery** (QA pass ✓)       | Seed data, Playwright E2E suite, full Docker stack, CI with E2E, accessibility and responsive pass, comprehensive README                                                                                                                                                                                              | E2E suite green locally ✓; still to verify: Docker images and CI                                 |

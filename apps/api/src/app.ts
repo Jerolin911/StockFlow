@@ -21,6 +21,7 @@ import {
 } from './modules/purchasing/supplier-prices.js';
 import { createCustomerReturnsRouter } from './modules/returns/customer-returns.js';
 import { createSupplierReturnsRouter } from './modules/returns/supplier-returns.js';
+import { auditTrail, createAuditRouter } from './modules/audit/audit.js';
 import { createNotificationsRouter } from './modules/notifications/notifications.js';
 import { createReportsRouter } from './modules/reports/routes.js';
 import { createSalesOrdersRouter } from './modules/sales/sales-orders.js';
@@ -71,6 +72,7 @@ export function createApp(): Express {
   app.use(cookieParser());
 
   const api = Router();
+  api.use(auditTrail());
   api.get('/health', async (_req, res) => {
     const database = await pingDatabase();
     res.status(database ? 200 : 503).json({
@@ -101,6 +103,7 @@ export function createApp(): Express {
   api.use('/warehouse-ops', createWarehouseOpsRouter());
   api.use('/reports', createReportsRouter());
   api.use('/notifications', createNotificationsRouter());
+  api.use('/audit-logs', createAuditRouter());
 
   app.use('/api/v1', api);
   app.use(notFoundHandler);

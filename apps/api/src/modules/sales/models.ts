@@ -71,6 +71,9 @@ salesOrderSchema.index({ status: 1, orderDate: -1 });
 salesOrderSchema.index({ 'customer._id': 1, orderDate: -1 });
 salesOrderSchema.index({ warehouseId: 1, status: 1 });
 salesOrderSchema.index({ 'lines.productId': 1, status: 1 });
+// Reports: orders created or confirmed in a date range.
+salesOrderSchema.index({ orderDate: -1 });
+salesOrderSchema.index({ confirmedAt: -1 });
 
 export const SalesOrder = model('SalesOrder', salesOrderSchema);
 export type SalesOrderRecord = InferSchemaType<typeof salesOrderSchema> & { _id: Types.ObjectId };

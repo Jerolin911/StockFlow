@@ -1,5 +1,6 @@
 import {
   ArrowLeftRight,
+  ScrollText,
   Bell,
   ChartColumn,
   ClipboardCheck,
@@ -97,6 +98,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { to: '/users', label: 'Users', icon: Users, permission: 'users:manage' },
       { to: '/settings', label: 'Settings', icon: Settings, permission: 'settings:manage' },
+      { to: '/audit-log', label: 'Audit log', icon: ScrollText, permission: 'audit:read' },
     ],
   },
 ];

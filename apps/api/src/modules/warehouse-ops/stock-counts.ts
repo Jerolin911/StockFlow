@@ -29,6 +29,7 @@ import {
   warehouseLookup,
   warehouseRef,
   type Actor,
+  type WarehouseLookup,
 } from '../common/documents.js';
 import { Product } from '../products/product.model.js';
 import { StockAdjustment } from '../stock/stock-adjustment.model.js';
@@ -40,23 +41,40 @@ type CreateInput = z.output<typeof createStockCountSchema>;
 type PostInput = z.output<typeof postStockCountSchema>;
 type Issue = { path: string; message: string };
 
-async function currentLevels(warehouseId: Types.ObjectId, productIds: Types.ObjectId[]) {
+type LevelMap = Map<string, { onHand: number; reserved: number }>;
+
+/** Current levels for every line of the given counts, keyed by warehouse:product, in one query. */
+async function levelsFor(counts: StockCountRecord[]): Promise<LevelMap> {
+  if (counts.length === 0) return new Map();
   const levels = await StockLevel.find(
-    { warehouseId, productId: { $in: productIds } },
-    { productId: 1, onHand: 1, reserved: 1 },
+    {
+      $or: counts.map((c) => ({
+        warehouseId: c.warehouseId,
+        productId: { $in: c.lines.map((l) => l.productId) },
+      })),
+    },
+    { productId: 1, warehouseId: 1, onHand: 1, reserved: 1 },
   ).lean();
-  return new Map(levels.map((l) => [l.productId.toString(), l]));
+  return new Map(levels.map((l) => [`${l.warehouseId.toString()}:${l.productId.toString()}`, l]));
 }
 
-async function toDto(c: StockCountRecord): Promise<StockCountDto> {
-  const posted = c.status === 'posted';
+async function toDtos(counts: StockCountRecord[]): Promise<StockCountDto[]> {
   const [warehouses, levels] = await Promise.all([
-    warehouseLookup([c.warehouseId]),
-    currentLevels(
-      c.warehouseId,
-      c.lines.map((l) => l.productId),
-    ),
+    warehouseLookup(counts.map((c) => c.warehouseId)),
+    levelsFor(counts),
   ]);
+  return counts.map((c) => toDto(c, warehouses, levels));
+}
+
+function toDto(
+  c: StockCountRecord,
+  warehouses: WarehouseLookup,
+  allLevels: LevelMap,
+): StockCountDto {
+  const posted = c.status === 'posted';
+  const levels = {
+    get: (productId: string) => allLevels.get(`${c.warehouseId.toString()}:${productId}`),
+  };
   const lines = c.lines.map((l) => {
     const level = levels.get(l.productId.toString());
     const system = posted ? (l.systemQuantity ?? 0) : (level?.onHand ?? 0);
@@ -107,7 +125,7 @@ async function toDto(c: StockCountRecord): Promise<StockCountDto> {
 export async function getStockCount(id: string): Promise<StockCountDto> {
   const c = await StockCount.findById(id).lean<StockCountRecord>();
   if (!c) throw notFound('Stock count');
-  return toDto(c);
+  return (await toDtos([c]))[0]!;
 }
 
 /**
@@ -380,7 +398,7 @@ async function listStockCounts(query: ListStockCountsQuery) {
     StockCount.countDocuments(filter),
   ]);
   return {
-    data: await Promise.all(rows.map(toDto)),
+    data: await toDtos(rows),
     meta: { page: query.page, pageSize: query.pageSize, total },
   };
 }

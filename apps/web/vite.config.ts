@@ -22,6 +22,8 @@ export default defineConfig({
   },
   test: {
     include: ['src/**/*.test.{ts,tsx}'],
+    // Component tests opt into jsdom with a @vitest-environment docblock.
     environment: 'node',
+    setupFiles: ['src/test/setup.ts'],
   },
 });

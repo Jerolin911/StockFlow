@@ -26,5 +26,7 @@ stockMovementSchema.index({ productId: 1, warehouseId: 1, createdAt: -1 });
 stockMovementSchema.index({ warehouseId: 1, createdAt: -1 });
 stockMovementSchema.index({ createdAt: -1 });
 stockMovementSchema.index({ 'reference.id': 1 });
+// Reports: flows of one movement type over a date range.
+stockMovementSchema.index({ type: 1, createdAt: -1 });
 
 export const StockMovement = model('StockMovement', stockMovementSchema);

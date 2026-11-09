@@ -379,6 +379,15 @@ export const router = createBrowserRouter([
             ],
           },
           {
+            element: <RequirePermission permission="audit:read" />,
+            children: [
+              {
+                path: '/audit-log',
+                lazy: page(() => import('@/features/audit/AuditLogPage'), 'AuditLogPage'),
+              },
+            ],
+          },
+          {
             element: <RequirePermission permission="settings:manage" />,
             children: [
               {

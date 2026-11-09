@@ -104,7 +104,7 @@ The demo password is `DEMO_PASSWORD` in [apps/api/scripts/seed-data.ts](apps/api
 ```bash
 npm run lint
 npm run typecheck
-npm test            # shared unit, API integration (in-memory MongoDB replica set), web unit
+npm test            # shared unit, API integration and security (in-memory MongoDB replica set), web unit and component (jsdom)
 npm run test:e2e    # Playwright; starts its own API and web servers
 ```
 

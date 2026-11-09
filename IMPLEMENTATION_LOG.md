@@ -600,3 +600,51 @@ Delivered under roadmap phase 6.
 - Docker images and CI are still unverified.
 - Notifications aren't pruned; a retention policy may be needed over time.
 - A low-stock notification describes the moment stock crossed the threshold; if a cancellation restores stock, the notification stays as a record of that event.
+
+## Phase 7 — QA and hardening audit (2026-11-09)
+
+Delivered under roadmap phase 7 (QA pass; Docker and CI verification still open).
+
+### Completed
+
+- **Security review of the API:**
+  - Every mutating route is behind `authenticate()` and `authorize()`, and every input is parsed with a shared Zod schema.
+  - JWT is pinned to HS256; refresh tokens are hashed; passwords use bcrypt; logs redact secrets.
+  - helmet is on, with a 100 kB body limit and a login rate limit; there is no CORS for unlisted origins and no stack traces in responses.
+  - Query parameters can't carry Mongo operators, and search is regex-escaped.
+- **Audit log** (it was promised by `audit:read` but missing):
+  - `auditTrail()` middleware with an `auditLogs` collection, `GET /audit-logs` (search, area, failed sign-ins, actor, record, date range, paging).
+  - An admin "Audit log" page linking each entry to its record.
+- **Performance:**
+  - The stock-count list and detail fetched stock levels per line (N+1); now one query per page.
+  - New indexes for report and dashboard queries: movements `{type, createdAt}`, sales orders `{orderDate}` and `{confirmedAt}`, purchase orders `{orderDate}`. Verified with `explain()`: IXSCAN, no COLLSCAN.
+- **Responsive layout:** the dashboard overflowed by 30 px at phone width (auto-sized grid tracks grew with long product names); the grids are now `grid-cols-1` below `lg`, and cards are `min-w-0`. Fifteen pages were checked at 375 and 768 px.
+- **Earlier fixes in this pass:** card titles are `h2` headings; a deliberate sign-out no longer returns you to the last page on the next sign-in; the reports page no longer renders two `h1`s when a tab is forbidden.
+
+### Changed files
+
+- `apps/api/src/modules/audit/audit.ts` (new), `apps/api/src/app.ts`
+- `apps/api/src/modules/{stock/stock-movement.model,sales/models,purchasing/models}.ts` (indexes)
+- `apps/api/src/modules/warehouse-ops/stock-counts.ts` (N+1)
+- `packages/shared/src/{schemas/reports,dto-reports}.ts`
+- `apps/web/src/features/audit/AuditLogPage.tsx` (new), `app/{router.tsx,navigation.ts}`, `features/dashboard/DashboardPage.tsx`
+- Tests: `apps/api/tests/security.test.ts`, `apps/web/src/test/setup.ts`, `apps/web/src/components/charts.test.tsx`, `apps/web/src/features/{forms,auth/guards,notifications/NotificationBell}.test.tsx`, `apps/web/e2e/responsive.spec.ts`
+- `apps/web/{package.json,vite.config.ts}` (Testing Library, jsdom, setup file)
+- `docs/ARCHITECTURE.md`, `README.md`, `CLAUDE.md`
+
+### Test results
+
+- `packages/shared`: 21 unit tests passed.
+- `apps/api`: 168 integration tests passed, 11 of them new (security and audit).
+- Concurrency suites (sales, warehouse ops, returns, procurement, stock) were rerun 3 times each with no failures.
+- `apps/web`: 30 unit and component tests passed (24 new): charts, line validation, reason dialog, history, search debounce, relative times, route guards and the notification bell.
+- Playwright: 38 E2E tests passed, including the new phone and tablet overflow checks.
+- `npm run lint`, `npm run typecheck`, `prettier --check` and `npm run build` pass.
+
+### Pending issues
+
+- Docker images and the compose stack are unverified: Docker Desktop's engine wasn't running in this environment, so it has to be started by hand.
+- CI is unverified (there is no Git remote).
+- Rate limiting covers sign-in only.
+- Notifications and audit entries aren't pruned.
+- The initial JS bundle is about 792 kB (244 kB gzipped); route pages are lazy, but the shell could be split further.
