@@ -18,6 +18,9 @@ export default defineConfig({
   server: {
     port: Number(process.env.WEB_PORT ?? 5173),
     strictPort: true,
+    // Containers on Windows and macOS don't see host file events; docker-compose.dev.yml sets this.
+    watch:
+      process.env.CHOKIDAR_USEPOLLING === 'true' ? { usePolling: true, interval: 300 } : undefined,
     proxy: { '/api': { target: apiTarget, changeOrigin: false } },
   },
   test: {

@@ -1,0 +1,90 @@
+# Development stack with hot reload: MongoDB, the API (tsx watch) and the Vite dev server,
+# running the source from this folder.
+#   docker compose -f docker-compose.dev.yml up            # web on http://localhost:5173
+#   docker compose -f docker-compose.dev.yml run --rm seed # load the demo data
+# Dependencies are installed inside the containers (Linux builds of bcrypt etc.), into named
+# volumes, so they never mix with a node_modules folder on the host.
+name: stockflow-dev
+
+x-node: &node
+  image: node:22-slim
+  working_dir: /workspace
+  volumes:
+    - .:/workspace
+    - node-modules:/workspace/node_modules
+    - api-node-modules:/workspace/apps/api/node_modules
+    - web-node-modules:/workspace/apps/web/node_modules
+    - shared-node-modules:/workspace/packages/shared/node_modules
+  environment: &dev-env
+    NODE_ENV: development
+    MONGODB_URI: mongodb://mongo:27017/stockflow?replicaSet=rs0
+    JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-development-only-secret-not-for-production-use}
+    COOKIE_SECURE: 'false'
+    CHOKIDAR_USEPOLLING: 'true'
+    MONGOMS_DISABLE_POSTINSTALL: '1'
+
+services:
+  mongo:
+    image: mongo:8.0
+    command: ['--replSet', 'rs0', '--bind_ip_all']
+    ports:
+      - '127.0.0.1:${MONGO_DEV_PORT:-27017}:27017'
+    volumes:
+      - mongo-dev-data:/data/db
+    healthcheck:
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - "try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'mongo:27017' }] }).ok }"
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+
+  install:
+    <<: *node
+    command: ['npm', 'ci', '--no-audit', '--no-fund']
+
+  api:
+    <<: *node
+    command: ['npm', 'run', 'dev', '-w', '@stockflow/api']
+    ports:
+      - '127.0.0.1:4000:4000'
+    depends_on:
+      install:
+        condition: service_completed_successfully
+      mongo:
+        condition: service_healthy
+
+  web:
+    <<: *node
+    command: ['npm', 'run', 'dev', '-w', '@stockflow/web', '--', '--host', '0.0.0.0']
+    environment:
+      <<: *dev-env
+      VITE_API_PROXY_TARGET: http://api:4000
+    ports:
+      - '127.0.0.1:${WEB_DEV_PORT:-5173}:5173'
+    depends_on:
+      install:
+        condition: service_completed_successfully
+      api:
+        condition: service_started
+
+  seed:
+    <<: *node
+    profiles: [tools]
+    command: ['npm', 'run', 'seed']
+    depends_on:
+      install:
+        condition: service_completed_successfully
+      mongo:
+        condition: service_healthy
+
+volumes:
+  mongo-dev-data:
+  node-modules:
+  api-node-modules:
+  web-node-modules:
+  shared-node-modules:

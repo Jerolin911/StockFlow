@@ -25,6 +25,7 @@ const envSchema = z.object({
     ),
   TRUST_PROXY: z.string().default('loopback'),
   LOGIN_RATE_LIMIT: z.coerce.number().int().positive().default(10),
+  API_DOCS: booleanString.default(true),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).optional(),
   BOOTSTRAP_ADMIN_NAME: z.string().trim().min(1).default('Administrator'),
   BOOTSTRAP_ADMIN_EMAIL: z.string().optional(),

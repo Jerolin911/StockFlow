@@ -14,7 +14,7 @@ interface AuthenticateOptions {
  * changes take effect immediately rather than when the token expires.
  */
 export function authenticate(options: AuthenticateOptions = {}): RequestHandler {
-  return async (req, _res, next) => {
+  return describeAccess({ authenticated: true }, async (req, _res, next) => {
     const header = req.headers.authorization;
     if (!header?.startsWith('Bearer ')) throw unauthenticated();
 
@@ -41,15 +41,29 @@ export function authenticate(options: AuthenticateOptions = {}): RequestHandler 
       permissions: permissionsForRole(user.role),
     };
     next();
-  };
+  });
 }
 
 export function authorize(...required: Permission[]): RequestHandler {
-  return (req, _res, next) => {
+  return describeAccess({ permissions: required }, (req, _res, next) => {
     const auth = requireAuth(req);
     if (!required.every((permission) => auth.permissions.includes(permission))) throw forbidden();
     next();
-  };
+  });
+}
+
+/** What a guard requires, attached to the handler so the OpenAPI document can read it. */
+export interface AccessRequirement {
+  authenticated?: boolean;
+  permissions?: Permission[];
+}
+
+function describeAccess(access: AccessRequirement, handler: RequestHandler): RequestHandler {
+  return Object.assign(handler, { access });
+}
+
+export function accessOf(handler: unknown): AccessRequirement | undefined {
+  return (handler as { access?: AccessRequirement } | null)?.access;
 }
 
 export function requireAuth(req: Request): AuthContext {

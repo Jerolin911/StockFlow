@@ -1,9 +1,23 @@
+# Production-style stack: MongoDB replica set, API and nginx serving the web app.
+#   cp .env.example .env        # then set JWT_ACCESS_SECRET
+#   docker compose up -d --build
+#   docker compose run --rm seed   # optional: wipe the database and load demo data
+# See README.md → Deployment for running prebuilt images from GHCR.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: '3'
+
 services:
   mongo:
     image: mongo:8.0
     command: ['--replSet', 'rs0', '--bind_ip_all']
+    # Published on this machine only (127.0.0.1), for tools such as MongoDB Compass.
+    # 27018 avoids clashing with a local development database on 27017.
     ports:
-      - '27017:27017'
+      - '127.0.0.1:${MONGO_PORT:-27018}:27017'
     volumes:
       - mongo-data:/data/db
     healthcheck:
@@ -18,32 +32,59 @@ services:
       timeout: 10s
       retries: 20
       start_period: 10s
+    restart: unless-stopped
+    logging: *logging
 
   api:
+    image: ${API_IMAGE:-stockflow-api:local}
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    environment:
+    environment: &api-env
+      NODE_ENV: production
       MONGODB_URI: mongodb://mongo:27017/stockflow?replicaSet=rs0
-      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in .env}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in .env (see .env.example)}
       TRUST_PROXY: '1'
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      API_DOCS: ${API_DOCS:-true}
+      LOGIN_RATE_LIMIT: ${LOGIN_RATE_LIMIT:-10}
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-Administrator}
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
     depends_on:
       mongo:
         condition: service_healthy
     restart: unless-stopped
+    logging: *logging
 
   web:
+    image: ${WEB_IMAGE:-stockflow-web:local}
     build:
       context: .
       dockerfile: apps/web/Dockerfile
     ports:
       - '${WEB_PORT:-8080}:80'
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     restart: unless-stopped
+    logging: *logging
+
+  # One-off: `docker compose run --rm seed` erases the database and loads the demo data.
+  seed:
+    image: ${API_IMAGE:-stockflow-api:local}
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    profiles: [tools]
+    command: ['node', 'dist/scripts/seed.js']
+    environment:
+      <<: *api-env
+      SEED_CONFIRM: reset
+      SEED_PASSWORD: ${SEED_PASSWORD:-}
+    depends_on:
+      mongo:
+        condition: service_healthy
 
 volumes:
   mongo-data:

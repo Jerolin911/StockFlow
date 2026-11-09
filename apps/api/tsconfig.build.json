@@ -3,9 +3,15 @@
   "compilerOptions": {
     "noEmit": false,
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": ".",
     "sourceMap": true,
     "paths": {}
   },
-  "include": ["src"]
+  "include": [
+    "src",
+    "scripts/seed.ts",
+    "scripts/seed-data.ts",
+    "scripts/seed-history.ts",
+    "scripts/seed-timeline.ts"
+  ]
 }

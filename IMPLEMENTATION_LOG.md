@@ -648,3 +648,37 @@ Delivered under roadmap phase 7 (QA pass; Docker and CI verification still open)
 - Rate limiting covers sign-in only.
 - Notifications and audit entries aren't pruned.
 - The initial JS bundle is about 792 kB (244 kB gzipped); route pages are lazy, but the shell could be split further.
+
+## Phase 8 — Deployment, API documentation and presentation (2026-11-09)
+
+### Completed
+
+- **Docker:**
+  - API image with a healthcheck; it also ships the compiled seed. nginx gains gzip and security headers.
+  - `docker-compose.yml` is production-style: healthchecks and `--wait`, log rotation, MongoDB published on localhost only, configurable images (`API_IMAGE`, `WEB_IMAGE`) for GHCR, and a `seed` tool service that needs `SEED_CONFIRM=reset`.
+  - `docker-compose.dev.yml` runs MongoDB, the API (tsx watch) and Vite against the source, with hot reload, dependencies in named volumes and a seed service.
+- **Configuration:** documented root `.env.example` and `apps/api/.env.example`; `API_DOCS` toggle; an empty `SEED_PASSWORD` falls back to the default.
+- **OpenAPI and Swagger UI:**
+  - `/api/v1/openapi.json` and `/api/v1/docs`, with 132 operations generated from the mounted routers.
+  - Guards are read from the middleware, so each operation states its permission and roles. Request bodies and query parameters come from the shared Zod schemas.
+- **CI/CD:** the workflow runs lint, format, typecheck, tests, build and E2E. A second job builds the production images, seeds them, smoke-tests through nginx and runs the Playwright suite against them. On pushes to `main` and `v*` tags, both images publish to GHCR. Validated with actionlint.
+- **Demo data:** about 12 weeks of history added through the real services (weekly supplier deliveries, some late; customer orders through to delivery). Each week is stock-neutral, so today's figures are unchanged. Past notifications are marked read.
+- **README:**
+  - Overview, features, technology, and architecture, ER, procurement and fulfilment diagrams.
+  - Docker, Node and dev-container setup; environment variables; a demo tour.
+  - API docs, testing, deployment (GHCR, HTTPS with Caddy, backups) and troubleshooting.
+  - Screenshots captured by `npm run screenshots -w @stockflow/web`.
+
+### Test results
+
+- API: 173 tests passed, including 5 new OpenAPI tests (complete coverage, valid spec, guards, every documented permission enforced, UI served) and the updated seed test.
+- Web 30 and shared 21 unit tests passed; lint, typecheck, format and build pass.
+- The production Docker images were built, seeded and checked:
+  - Health, Swagger UI and sign-in work through nginx.
+  - All 38 Playwright tests passed against them (nginx → API → MongoDB).
+- The dev stack was checked: hot reload restarts the API, and seeding and sign-in work through the Vite proxy.
+
+### Pending issues
+
+- GitHub Actions and GHCR publishing haven't run: there is no Git remote yet.
+- No licence file; the owner should choose one.

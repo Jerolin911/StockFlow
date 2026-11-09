@@ -22,6 +22,7 @@ import {
 import { createCustomerReturnsRouter } from './modules/returns/customer-returns.js';
 import { createSupplierReturnsRouter } from './modules/returns/supplier-returns.js';
 import { auditTrail, createAuditRouter } from './modules/audit/audit.js';
+import { buildOpenApi, createDocsRouter, type Mount } from './modules/docs/openapi.js';
 import { createNotificationsRouter } from './modules/notifications/notifications.js';
 import { createReportsRouter } from './modules/reports/routes.js';
 import { createSalesOrdersRouter } from './modules/sales/sales-orders.js';
@@ -41,6 +42,49 @@ function parseTrustProxy(value: string): boolean | number | string {
   if (value === 'false') return false;
   if (/^\d+$/.test(value)) return Number(value);
   return value;
+}
+
+function createHealthRouter(): Router {
+  const router = Router();
+  router.get('/', async (_req, res) => {
+    const database = await pingDatabase();
+    res.status(database ? 200 : 503).json({
+      data: { status: database ? 'ok' : 'degraded', database: database ? 'up' : 'down' },
+    });
+  });
+  return router;
+}
+
+/** Every feature router and its prefix under /api/v1. The OpenAPI document is built from this list. */
+export function apiMounts(): Mount[] {
+  return [
+    ['/health', createHealthRouter()],
+    ['/auth', createAuthRouter()],
+    ['/users', createUsersRouter()],
+    ['/settings', createSettingsRouter()],
+    ['/warehouses', createWarehousesRouter()],
+    ['/categories', createCategoriesRouter()],
+    // Nested routers first so their paths aren't treated as unknown ids by the parent router.
+    ['/products/:productId/supplier-prices', createProductSupplierPricesRouter()],
+    ['/products', createProductsRouter()],
+    ['/suppliers/:supplierId', createSupplierPurchasingRouter()],
+    ['/suppliers', suppliers.router()],
+    ['/customers', customers.router()],
+    ['/stock', createStockRouter()],
+    ['/purchase-requests', createPurchaseRequestsRouter()],
+    ['/purchase-orders', createPurchaseOrdersRouter()],
+    ['/goods-receipts', createGoodsReceiptsRouter()],
+    ['/sales-orders', createSalesOrdersRouter()],
+    ['/shipments', createShipmentsRouter()],
+    ['/stock-transfers', createTransfersRouter()],
+    ['/stock-counts', createStockCountsRouter()],
+    ['/customer-returns', createCustomerReturnsRouter()],
+    ['/supplier-returns', createSupplierReturnsRouter()],
+    ['/warehouse-ops', createWarehouseOpsRouter()],
+    ['/reports', createReportsRouter()],
+    ['/notifications', createNotificationsRouter()],
+    ['/audit-logs', createAuditRouter()],
+  ];
 }
 
 export function createApp(): Express {
@@ -73,37 +117,9 @@ export function createApp(): Express {
 
   const api = Router();
   api.use(auditTrail());
-  api.get('/health', async (_req, res) => {
-    const database = await pingDatabase();
-    res.status(database ? 200 : 503).json({
-      data: { status: database ? 'ok' : 'degraded', database: database ? 'up' : 'down' },
-    });
-  });
-  api.use('/auth', createAuthRouter());
-  api.use('/users', createUsersRouter());
-  api.use('/settings', createSettingsRouter());
-  api.use('/warehouses', createWarehousesRouter());
-  api.use('/categories', createCategoriesRouter());
-  // Nested routers first so their paths aren't treated as unknown ids by the parent router.
-  api.use('/products/:productId/supplier-prices', createProductSupplierPricesRouter());
-  api.use('/products', createProductsRouter());
-  api.use('/suppliers/:supplierId', createSupplierPurchasingRouter());
-  api.use('/suppliers', suppliers.router());
-  api.use('/customers', customers.router());
-  api.use('/stock', createStockRouter());
-  api.use('/purchase-requests', createPurchaseRequestsRouter());
-  api.use('/purchase-orders', createPurchaseOrdersRouter());
-  api.use('/goods-receipts', createGoodsReceiptsRouter());
-  api.use('/sales-orders', createSalesOrdersRouter());
-  api.use('/shipments', createShipmentsRouter());
-  api.use('/stock-transfers', createTransfersRouter());
-  api.use('/stock-counts', createStockCountsRouter());
-  api.use('/customer-returns', createCustomerReturnsRouter());
-  api.use('/supplier-returns', createSupplierReturnsRouter());
-  api.use('/warehouse-ops', createWarehouseOpsRouter());
-  api.use('/reports', createReportsRouter());
-  api.use('/notifications', createNotificationsRouter());
-  api.use('/audit-logs', createAuditRouter());
+  const mounts = apiMounts();
+  for (const [prefix, router] of mounts) api.use(prefix, router);
+  if (env.API_DOCS) api.use(createDocsRouter(buildOpenApi(mounts)));
 
   app.use('/api/v1', api);
   app.use(notFoundHandler);

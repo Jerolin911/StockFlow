@@ -68,10 +68,13 @@ import {
   receiveTransfer,
 } from '../src/modules/warehouse-ops/transfers.js';
 import { User } from '../src/modules/users/user.model.js';
+import { createTimeline } from './seed-timeline.js';
+import { Notification } from '../src/modules/notifications/notifications.js';
+import { seedHistory } from './seed-history.js';
 import { Warehouse } from '../src/modules/warehouses/warehouse.model.js';
 
 /** Demo-only credentials. Every seeded account uses this password unless SEED_PASSWORD is set. */
-export const DEMO_PASSWORD = process.env.SEED_PASSWORD ?? 'StockFlow-Demo-2026';
+export const DEMO_PASSWORD = process.env.SEED_PASSWORD || 'StockFlow-Demo-2026';
 
 export const DEMO_USERS: { name: string; email: string; role: Role }[] = [
   { name: 'Dana Whitfield', email: 'admin@stockflow.test', role: 'admin' },
@@ -193,6 +196,60 @@ export async function seedDatabase(): Promise<void> {
   // Model.init() is memoised and won't run again after the drop, so rebuild indexes explicitly.
   await Promise.all(Object.values(mongoose.models).map((m) => m.createIndexes()));
 
+  // Master data and opening stock date from about 13 weeks ago, followed by weeks of trading
+  // history; today's open work is seeded at the real time afterwards.
+  const now = Date.now();
+  await seedFoundationAndHistory(new Date(now - 88 * DAY), new Date(now - 2 * DAY));
+}
+
+const DAY = 24 * 60 * 60 * 1000;
+
+async function seedFoundationAndHistory(historyStart: Date, historyEnd: Date): Promise<void> {
+  const timeline = createTimeline();
+  const { users, inventoryManager, warehouseId, productIds, supplierIds, customerIds } =
+    await timeline.at(historyStart, seedFoundation);
+
+  const actor = actorFor(users);
+  await seedHistory({
+    timeline,
+    start: historyStart,
+    end: historyEnd,
+    actors: {
+      procurement: actor('procurement_manager'),
+      admin: actor('admin'),
+      sales: actor('sales_manager'),
+      staff: actor('staff'),
+    },
+    productIds,
+    supplierIds,
+    customerIds,
+    warehouseId: warehouseId('MAIN'),
+  });
+  await timeline.apply();
+  // Past alerts and approvals were dealt with at the time.
+  await Notification.updateMany({ readAt: null }, [{ $set: { readAt: '$createdAt' } }]);
+
+  // Today: the open work people would find on signing in.
+  await postAdjustment(
+    stockAdjustmentSchema.parse({
+      warehouseId: warehouseId('MAIN'),
+      reason: 'damage',
+      notes: 'Water damage in aisle 4',
+      lines: [
+        { productId: productIds[0], quantityChange: -12 },
+        { productId: productIds[13], quantityChange: -20 },
+      ],
+    }),
+    inventoryManager,
+  );
+
+  await seedProcurement(users, supplierIds, productIds, warehouseId);
+  await seedSales(users, customerIds, productIds, warehouseId);
+  await seedWarehouseOps(users, supplierIds, productIds, warehouseId);
+}
+
+/** Users, warehouses, catalogue, opening stock, suppliers and customers. */
+async function seedFoundation() {
   const passwordHash = await hashPassword(DEMO_PASSWORD);
   const users = await User.insertMany(DEMO_USERS.map((user) => ({ ...user, passwordHash })));
   const inventoryManager = users.find((u) => u.role === 'inventory_manager')!._id.toString();
@@ -244,19 +301,6 @@ export async function seedDatabase(): Promise<void> {
     );
   }
 
-  await postAdjustment(
-    stockAdjustmentSchema.parse({
-      warehouseId: warehouseId('MAIN'),
-      reason: 'damage',
-      notes: 'Water damage in aisle 4',
-      lines: [
-        { productId: productIds[0], quantityChange: -12 },
-        { productId: productIds[13], quantityChange: -20 },
-      ],
-    }),
-    inventoryManager,
-  );
-
   const supplierIds: string[] = [];
   for (const supplier of SUPPLIERS) {
     supplierIds.push((await suppliers.create(createSupplierSchema.parse(supplier)))._id.toString());
@@ -265,10 +309,7 @@ export async function seedDatabase(): Promise<void> {
   for (const customer of CUSTOMERS) {
     customerIds.push((await customers.create(createCustomerSchema.parse(customer)))._id.toString());
   }
-
-  await seedProcurement(users, supplierIds, productIds, warehouseId);
-  await seedSales(users, customerIds, productIds, warehouseId);
-  await seedWarehouseOps(users, supplierIds, productIds, warehouseId);
+  return { users, inventoryManager, warehouseId, productIds, supplierIds, customerIds };
 }
 
 /**
