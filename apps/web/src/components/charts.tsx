@@ -140,7 +140,9 @@ export function ColumnChart({
   const total = (key: string) => points.reduce((s, p) => s + (p.values[key] ?? 0), 0);
 
   return (
-    <figure className="grid gap-3" aria-label={label}>
+    // grid-cols-1 caps the track at the figure's width; an auto track grows to the axis labels'
+    // combined width and pushes the chart past a phone screen.
+    <figure className="grid grid-cols-1 gap-3" aria-label={label}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         {series.length > 1 ? (
           <ul className="flex flex-wrap gap-4 text-xs" aria-label="Legend">

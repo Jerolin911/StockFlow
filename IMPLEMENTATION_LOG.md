@@ -691,15 +691,18 @@ The first two GitHub Actions runs failed in both E2E steps. Lint, unit tests and
 
 - **Customer return test:** it opened the last delivered Harbour View Dental order. The demo history adds other delivered orders for that customer, so the test landed on an order with no A4 paper line. It now reaches the seeded order through its existing customer return.
 - **First test timing out on a cold Vite server:** on the first page load, Vite pre-bundles dependencies, which took about 25 s, but Playwright's readiness check passes as soon as `index.html` is served. A global setup (`e2e/global-setup.ts`) now loads the sign-in page once before the suite. It is skipped when `E2E_BASE_URL` points at a built stack.
+- **Report charts overflowing a phone screen (found in the third run, on commit cf97ce6):** on Linux, `/reports/purchasing` and `/reports/sales` scrolled 15 px sideways at 375 px. The `ColumnChart` figure was a grid with an `auto` track, which grows to the axis labels' combined text width. Linux fonts are wider than Windows fonts, so this overflowed only on CI. Locally it reproduced at 340 px (+8 px) and 320 px (+28 px). The figure now uses `grid-cols-1`, so the track is capped at the figure's width and the labels truncate. With the fix there is no overflow at 375, 340 or 320 px.
 
 ### Changed files
 
 - `apps/web/e2e/warehouse.spec.ts`
 - `apps/web/e2e/global-setup.ts`
 - `apps/web/playwright.config.ts`
+- `apps/web/src/components/charts.tsx`
 
 ### Test results
 
 - With `CI=true TZ=UTC` and the Vite cache cleared, 37 of 38 tests passed in the full run.
 - The other test, supplier return, failed after a 6.9-minute local machine stall. It then passed when the warehouse spec was re-run on a fresh seed.
+- After the chart fix, `responsive.spec.ts` passes at phone and tablet sizes under `CI=true TZ=UTC`, and the web unit tests pass (30 of 30).
 - Lint, typecheck and format pass.
