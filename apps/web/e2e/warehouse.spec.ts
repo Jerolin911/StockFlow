@@ -138,12 +138,18 @@ test('customer return: request → approve → receive into quarantine → inspe
   await signInFromStart(page, SALES);
   const before = await stockIn(page, 'A4 Copy Paper 80gsm (500 sheets)', 'MAIN');
 
-  await page.goto('/sales-orders?status=delivered');
+  // The seeded Harbour View Dental order (paper and sticky notes) is the only one with a
+  // customer return, so reach it through that return; the demo history adds other delivered
+  // orders for the same customer.
+  await page.goto('/customer-returns');
   await page
     .getByRole('row', { name: /Harbour View Dental/ })
-    // The seeded order is the oldest for this customer; earlier specs add newer ones.
-    .last()
+    .first()
     .getByRole('link')
+    .first()
+    .click();
+  await page
+    .getByRole('link', { name: /^SO-\d{4}-\d{5}$/ })
     .first()
     .click();
   await page.getByRole('link', { name: 'Create return' }).click();
