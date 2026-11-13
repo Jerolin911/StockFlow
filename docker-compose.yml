@@ -1,5 +1,5 @@
 # Production-style stack: MongoDB replica set, API and nginx serving the web app.
-#   cp .env.example .env        # then set JWT_ACCESS_SECRET
+#   cp .env.example .env        # then set JWT_ACCESS_SECRET, DATA_ENCRYPTION_KEYS, BLIND_INDEX_KEY
 #   docker compose up -d --build
 #   docker compose run --rm seed   # optional: wipe the database and load demo data
 # See README.md → Deployment for running prebuilt images from GHCR.
@@ -44,6 +44,8 @@ services:
       NODE_ENV: production
       MONGODB_URI: mongodb://mongo:27017/stockflow?replicaSet=rs0
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in .env (see .env.example)}
+      DATA_ENCRYPTION_KEYS: ${DATA_ENCRYPTION_KEYS:?Set DATA_ENCRYPTION_KEYS in .env (see .env.example)}
+      BLIND_INDEX_KEY: ${BLIND_INDEX_KEY:?Set BLIND_INDEX_KEY in .env (see .env.example)}
       TRUST_PROXY: '1'
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       API_DOCS: ${API_DOCS:-true}

@@ -18,7 +18,7 @@ Run from the repo root unless noted. Node ≥ 20.19.
 
 ```bash
 npm install
-cp apps/api/.env.example apps/api/.env   # set JWT_ACCESS_SECRET (≥32 chars)
+cp apps/api/.env.example apps/api/.env   # set JWT_ACCESS_SECRET (≥32 chars), DATA_ENCRYPTION_KEYS, BLIND_INDEX_KEY
 npm run db:local        # local MongoDB replica set rs0 on 27017 (no Docker); or: docker compose up -d mongo
 npm run seed            # drops the dev DB and seeds demo data through the real services
 npm run dev             # API on :4000 (tsx watch) + web on :5173 (Vite proxies /api)
@@ -74,6 +74,7 @@ Zod gotcha: field helpers and update schemas have no `.default()`, because Zod 4
 - Reports (`modules/reports`): read-only aggregations over live records; `resolveRange` defaults to the last 30 days, `sendTable`/`sendCsv` handle paging and `format=csv`. Value figures need `reports:inventory`.
 - Audit log (`modules/audit/audit.ts`): `auditTrail()` on the API router records, after the response, every successful mutation and every `/auth/login` attempt (not refresh, logout or notifications). New routes are covered automatically; `entityId` comes from `:id` or the created record's `data.id`.
 - OpenAPI (`modules/docs/`): `apiMounts()` in `app.ts` is the single router list. `discoverRoutes()` reads paths and guards from it (`authenticate`/`authorize` tag their handlers), and `catalog.ts` holds a summary plus body and query schemas per `METHOD /path`. `tests/openapi.test.ts` fails if a route has no catalog entry or a documented permission isn't enforced. Swagger UI is at `/api/v1/docs`.
+- Customer privacy (`modules/privacy`, ARCHITECTURE 5.4): customer `contactName`, `email`, `phone`, `address`, `shippingAddress`, `notes` and the `shippingAddress` on sales orders and shipments are AES-256-GCM ciphertext (`enc:v1:…`) under a per-customer data key in `customerKeys`, wrapped by `DATA_ENCRYPTION_KEYS`. Seal with `sealCustomerData`/`sealDocumentAddress` and open with `openCustomerData`/`openDocumentAddress` from `customer-data.ts`, loading keys with `loadCustomerKeys` (one query per page); never write those fields in plaintext, and a shipment copies the order's ciphertext. Email search uses the `emailIndex` blind index (exact match only). `POST /customers/:id/erase` shreds the key; erased customers can't be edited or sold to, and their documents show `customerErased`. Scripts: `privacy:rotate-key`, `privacy:encrypt-existing`.
 - History is never edited or deleted: a posted adjustment is corrected by `POST /stock/adjustments/:id/reverse`, which posts the opposite quantities and links both documents.
 - `apps/api/tests/fixtures.ts` `expectLedgerConsistent()` runs after every stock-touching test (in `afterEach`). It checks each bucket's ledger = its balance, reserved = what open orders hold, order-line counters = their shipments and returns, and that `SHIPMENT`, `TRANSFER_*`, `CUSTOMER_RETURN` and `SUPPLIER_RETURN` movements match their documents. Never set `onHand`/`reserved` directly in tests; go through the API or services.
 
@@ -101,5 +102,6 @@ Zod gotcha: field helpers and update schemas have no `.default()`, because Zod 4
 ## Environment notes
 
 - MongoDB must run as a replica set (transactions).
+- The API refuses to start without `DATA_ENCRYPTION_KEYS` and `BLIND_INDEX_KEY`. Tests set fixed keys in `apps/api/vitest.config.ts`; the E2E server generates random ones. A database written before encryption existed needs `npm run privacy:encrypt-existing -w @stockflow/api` or a reseed.
 - The root `package.json` overrides `vite` to `^7.3.7`; Vitest 4 would otherwise pull in Vite 8.
-- `docker-compose.yml` is the production-style stack (mongo on 127.0.0.1:27018, api, nginx web on `WEB_PORT`, default 8080); `docker compose run --rm seed` loads demo data. `docker-compose.dev.yml` runs the source with hot reload (polling via `CHOKIDAR_USEPOLLING`). The API build output is `dist/src` and `dist/scripts`. `E2E_BASE_URL` points Playwright at a running stack. Verified locally; CI hasn't run because there is no Git remote.
+- `docker-compose.yml` is the production-style stack (mongo on 127.0.0.1:27018, api, nginx web on `WEB_PORT`, default 8080); `docker compose run --rm seed` loads demo data. `docker-compose.dev.yml` runs the source with hot reload (polling via `CHOKIDAR_USEPOLLING`). The API build output is `dist/src` and `dist/scripts`. `E2E_BASE_URL` points Playwright at a running stack. CI runs on GitHub Actions (`.github/workflows/ci.yml`) on pushes to `main`, `v*` tags and pull requests.

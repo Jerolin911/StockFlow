@@ -19,6 +19,9 @@ x-node: &node
     NODE_ENV: development
     MONGODB_URI: mongodb://mongo:27017/stockflow?replicaSet=rs0
     JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-development-only-secret-not-for-production-use}
+    # Public development keys: customer data in this stack is not protected.
+    DATA_ENCRYPTION_KEYS: ${DATA_ENCRYPTION_KEYS:-dev:ZGV2ZWxvcG1lbnQtb25seS1rZXktbm90LXNlY3JldCE=}
+    BLIND_INDEX_KEY: ${BLIND_INDEX_KEY:-ZGV2ZWxvcG1lbnQtb25seS1pbmRleC1rZXktcHVibGk=}
     COOKIE_SECURE: 'false'
     CHOKIDAR_USEPOLLING: 'true'
     MONGOMS_DISABLE_POSTINSTALL: '1'

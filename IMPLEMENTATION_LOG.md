@@ -706,3 +706,52 @@ The first two GitHub Actions runs failed in both E2E steps. Lint, unit tests and
 - The other test, supplier return, failed after a 6.9-minute local machine stall. It then passed when the warehouse spec was re-run on a fresh seed.
 - After the chart fix, `responsive.spec.ts` passes at phone and tablet sizes under `CI=true TZ=UTC`, and the web unit tests pass (30 of 30).
 - Lint, typecheck and format pass.
+
+## Customer personal data: encryption and crypto-shredding (2026-11-13)
+
+### Completed
+
+- **Envelope encryption** (`modules/privacy`):
+  - Each customer gets a random 256-bit data key, stored in the new `customerKeys` collection and wrapped with AES-256-GCM by a master key from `DATA_ENCRYPTION_KEYS` (`id:base64key`, comma-separated, active first).
+  - The customer's contact name, email, phone, address, shipping address and notes are stored as `enc:v1:` ciphertext, and so is the delivery address on sales orders and shipments; a shipment copies the order's ciphertext.
+  - Each value's additional authenticated data names its customer and field, so ciphertext can't be swapped between fields or customers. Plaintext where ciphertext is expected is an error.
+  - Name and code stay in plaintext, so documents, reports, notifications and history read as before.
+- **Search:** a blind index (HMAC-SHA256 under `BLIND_INDEX_KEY`) finds a customer by their full email, in any case. Name and code search are unchanged; partial emails and contact names no longer match.
+- **Erasure** (`POST /customers/:id/erase`, new `customers:erase` permission, admin only):
+  - Needs a reason and the customer's code typed to confirm. Refused while the customer has open orders, undelivered shipments or open returns.
+  - In one transaction: blanks draft orders' addresses, shreds the key (conditional, so concurrent erasures succeed exactly once), blanks and deactivates the customer and records who erased them, when and why.
+  - Afterwards edits are refused (409, also for an edit racing the erasure), drafts can't be confirmed and new orders can't be created for them. Orders, shipments, returns and the ledger are unchanged; their DTOs carry `customerErased`.
+  - Recorded in the audit log like every mutation; documented in OpenAPI.
+- **Operations:**
+  - `npm run privacy:rotate-key` re-wraps live data keys under the active master key and exits non-zero while any remain under an old one.
+  - `npm run privacy:encrypt-existing` encrypts data written before this change. Both are idempotent and use conditional updates, so they can run alongside the API. `:dist` variants run in the Docker image.
+  - The API refuses to start without valid keys. `docker-compose.yml` requires them; the dev compose file and CI use fixed, public, development-only keys; the E2E server generates random ones.
+- **Web:**
+  - Customers page: "Erase" action for admins with a confirmation dialog (reason, typed code, server errors on the fields), an "Erased" badge, no Edit for erased customers, and the search placeholder says the email must be typed in full.
+  - Sales order and shipment pages show "Erased at the customer's request" in place of the address.
+- **Docs:** ARCHITECTURE 5.4 (design, erasure rules, backup retention, rotation, migration, key loss), data model, permissions, endpoints and decision 30; README features, setup, environment variables, deployment, business rules and troubleshooting; CLAUDE.md.
+
+### Changed files
+
+- `packages/shared/src/{permissions,permissions.test,dto,dto-sales,schemas/master-data}.ts`
+- `apps/api/src/lib/keyring.ts` (new), `apps/api/src/config/env.ts`
+- `apps/api/src/modules/privacy/{field-crypto,customer-keys,customer-data,customer-erasure,encrypt-existing}.ts` (new)
+- `apps/api/src/modules/{partners/partners,sales/sales-orders,sales/shipments,common/documents,docs/catalog}.ts`
+- `apps/api/scripts/{privacy-encrypt-existing,privacy-rotate-key}.ts` (new), `apps/api/scripts/e2e-server.ts`, `apps/api/{package.json,tsconfig.build.json,vitest.config.ts}`
+- `apps/web/src/features/partners/{PartnersPage.tsx,api.ts}`, `apps/web/src/features/sales/{SalesOrderDetailPage,ShipmentDetailPage}.tsx`
+- Tests: `apps/api/tests/privacy.test.ts` (new), `apps/web/e2e/privacy.spec.ts` (new)
+- `.env.example`, `apps/api/.env.example`, `docker-compose.yml`, `docker-compose.dev.yml`, `.github/workflows/ci.yml`
+- `docs/ARCHITECTURE.md`, `README.md`, `CLAUDE.md`
+
+### Test results
+
+- API: 189 tests passed, including 16 new privacy tests: encryption round trip and tampering, wrong key or label, blind index, key list parsing, ciphertext at rest, edits and search, order and shipment addresses, erasure permissions, confirmation and open-work checks, full erasure effects, concurrent erasure (exactly one succeeds), audit entry, master key rotation and the migration rerun.
+- The privacy and sales suites (43 tests, including their concurrency tests) were rerun 3 times with no failures. The seed test passes unchanged.
+- Shared 21 and web 30 unit tests passed; lint, typecheck, format and build pass.
+- Playwright (`CI=true TZ=UTC`): all 39 tests passed, including the new privacy spec. In it, an admin adds a customer and finds them only by their full email, in any case. A wrong confirmation code is refused, the erasure succeeds, the email no longer finds the customer, and the row shows "Erased" with no contact details and no Edit.
+
+### Pending issues
+
+- Backups taken before an erasure still hold that customer's wrapped key until they expire; retention has to be set by whoever runs the backups (documented in ARCHITECTURE 5.4 and the README).
+- Contact names and phone numbers can't be searched any more, and emails only in full.
+- Existing installations must add the two keys and run `privacy:encrypt-existing` once after upgrading.

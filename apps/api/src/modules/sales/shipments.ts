@@ -38,6 +38,8 @@ import {
   type Actor,
   type WarehouseLookup,
 } from '../common/documents.js';
+import { openDocumentAddress } from '../privacy/customer-data.js';
+import { loadCustomerKeys, type CustomerKeys } from '../privacy/customer-keys.js';
 import { SalesOrder, Shipment, type ShipmentRecord } from './models.js';
 import { fulfilmentStatus, isOpenOrder, unallocatedFor } from './sales-orders.js';
 
@@ -49,7 +51,11 @@ type TrackingInput = z.output<typeof trackingEventSchema>;
 
 const units = (n: number) => `${n} unit${n === 1 ? '' : 's'}`;
 
-export function toShipmentDto(s: ShipmentRecord, warehouses: WarehouseLookup): ShipmentDto {
+export function toShipmentDto(
+  s: ShipmentRecord,
+  warehouses: WarehouseLookup,
+  customerKeys: CustomerKeys,
+): ShipmentDto {
   const picked = s.lines.every((l) => l.pickedQuantity !== null && l.pickedQuantity !== undefined)
     ? s.lines.reduce((sum, l) => sum + (l.pickedQuantity ?? 0), 0)
     : null;
@@ -64,7 +70,7 @@ export function toShipmentDto(s: ShipmentRecord, warehouses: WarehouseLookup): S
       name: s.customer.name ?? '',
     },
     warehouse: warehouseRef(warehouses, s.warehouseId),
-    shippingAddress: s.shippingAddress,
+    ...openDocumentAddress(customerKeys, s.customer._id, s.shippingAddress),
     lines: s.lines.map((l) => ({
       id: l._id.toString(),
       soLineId: l.soLineId.toString(),
@@ -111,7 +117,11 @@ export function toShipmentDto(s: ShipmentRecord, warehouses: WarehouseLookup): S
 export async function getShipment(id: string): Promise<ShipmentDto> {
   const shipment = await Shipment.findById(id).lean<ShipmentRecord>();
   if (!shipment) throw notFound('Shipment');
-  return toShipmentDto(shipment, await warehouseLookup([shipment.warehouseId]));
+  const [warehouses, keys] = await Promise.all([
+    warehouseLookup([shipment.warehouseId]),
+    loadCustomerKeys([shipment.customer._id]),
+  ]);
+  return toShipmentDto(shipment, warehouses, keys);
 }
 
 async function loadShipment(
@@ -203,6 +213,7 @@ export async function createShipment(input: CreateInput, actor: Actor): Promise<
           salesOrder: { _id: order._id, number: order.number },
           customer: order.customer,
           warehouseId: order.warehouseId,
+          // Still encrypted with the customer's key; copied as-is.
           shippingAddress: order.shippingAddress,
           lines,
           notes: input.notes,
@@ -505,9 +516,12 @@ async function listShipments(query: ListShipmentsQuery) {
       .lean<ShipmentRecord[]>(),
     Shipment.countDocuments(filter),
   ]);
-  const warehouses = await warehouseLookup(rows.map((r) => r.warehouseId));
+  const [warehouses, keys] = await Promise.all([
+    warehouseLookup(rows.map((r) => r.warehouseId)),
+    loadCustomerKeys(rows.map((r) => r.customer._id)),
+  ]);
   return {
-    data: rows.map((s) => toShipmentDto(s, warehouses)),
+    data: rows.map((s) => toShipmentDto(s, warehouses, keys)),
     meta: { page: query.page, pageSize: query.pageSize, total },
   };
 }

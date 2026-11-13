@@ -86,6 +86,11 @@ export interface SupplierDto extends PartnerDto {
 
 export interface CustomerDto extends PartnerDto {
   shippingAddress: string;
+  /**
+   * Set once the customer's personal data has been erased (their encryption key destroyed).
+   * Contact name, email, phone, addresses and notes are then empty here and on their orders.
+   */
+  erasedAt: string | null;
 }
 
 export interface ProductRef {

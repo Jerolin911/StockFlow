@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router';
 import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Plus } from 'lucide-react';
+import { Loader2, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { z } from 'zod';
 import {
@@ -19,10 +19,11 @@ import { FormField, fieldA11y } from '@/components/FormField';
 import { DialogActions, FormAlert, FormDialog } from '@/components/form-parts';
 import { PageHeader } from '@/components/PageHeader';
 import { Pagination } from '@/components/Pagination';
-import { ActiveBadge } from '@/components/StatusBadge';
+import { ActiveBadge, StatusBadge } from '@/components/StatusBadge';
 import { FilterBar, TableBodyState } from '@/components/table';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { DialogFooter } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import {
@@ -35,9 +36,10 @@ import {
 } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
 import { usePermission } from '@/features/auth/auth-context';
+import { ApiError } from '@/lib/api-client';
 import { applyServerErrors } from '@/lib/forms';
 import { compact, useUrlFilters } from '@/lib/use-url-filters';
-import { usePartners, useSavePartner, type PartnerKind } from './api';
+import { useEraseCustomer, usePartners, useSavePartner, type PartnerKind } from './api';
 
 type Partner = SupplierDto | CustomerDto;
 
@@ -47,6 +49,7 @@ interface KindConfig {
   description: string;
   permission: Permission;
   codeHint: string;
+  searchPlaceholder: string;
 }
 
 const KINDS: Record<PartnerKind, KindConfig> = {
@@ -56,6 +59,7 @@ const KINDS: Record<PartnerKind, KindConfig> = {
     description: 'Companies you buy stock from.',
     permission: 'suppliers:write',
     codeHint: 'Leave blank to generate the next SUP- code.',
+    searchPlaceholder: 'Search name, code, contact or email',
   },
   customers: {
     title: 'Customers',
@@ -63,6 +67,8 @@ const KINDS: Record<PartnerKind, KindConfig> = {
     description: 'Companies and people you sell to.',
     permission: 'customers:write',
     codeHint: 'Leave blank to generate the next CUS- code.',
+    // Personal details are encrypted: an email matches only when typed in full.
+    searchPlaceholder: 'Search name, code or full email',
   },
 };
 
@@ -84,19 +90,23 @@ const formSchema = z.object({
 type FormValues = z.input<typeof formSchema>;
 
 const isSupplier = (p: Partner): p is SupplierDto => 'leadTimeDays' in p;
+const isErased = (p: Partner) => !isSupplier(p) && p.erasedAt !== null;
 
 export function PartnersPage({ kind }: { kind: PartnerKind }) {
   const config = KINDS[kind];
   const canWrite = usePermission(config.permission);
+  const canErase = usePermission('customers:erase') && kind === 'customers';
   const filters = useUrlFilters(['search', 'status'] as const);
   const [editing, setEditing] = useState<Partner | null | undefined>(undefined);
+  const [erasing, setErasing] = useState<CustomerDto | null>(null);
   const partners = usePartners(kind, {
     ...compact(filters.values),
     page: filters.page,
     pageSize: 20,
   });
   const rows: Partner[] = partners.data?.data ?? [];
-  const cols = canWrite ? 6 : 5;
+  const hasActions = canWrite || canErase;
+  const cols = hasActions ? 6 : 5;
 
   return (
     <>
@@ -117,7 +127,7 @@ export function PartnersPage({ kind }: { kind: PartnerKind }) {
           <SearchInput
             value={filters.values.search}
             onChange={(search) => filters.update({ search })}
-            placeholder="Search name, code, contact or email"
+            placeholder={config.searchPlaceholder}
             label={`Search ${kind}`}
           />
           <FilterSelect
@@ -141,7 +151,7 @@ export function PartnersPage({ kind }: { kind: PartnerKind }) {
                 {kind === 'suppliers' ? 'Lead time' : 'Shipping address'}
               </TableHead>
               <TableHead>Status</TableHead>
-              {canWrite ? <TableHead className="w-20 pr-4" /> : null}
+              {hasActions ? <TableHead className="w-20 pr-4" /> : null}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -188,18 +198,35 @@ export function PartnersPage({ kind }: { kind: PartnerKind }) {
                       : p.shippingAddress || '—'}
                   </TableCell>
                   <TableCell>
-                    <ActiveBadge active={p.isActive} />
+                    {isErased(p) ? (
+                      <StatusBadge tone="gray">Erased</StatusBadge>
+                    ) : (
+                      <ActiveBadge active={p.isActive} />
+                    )}
                   </TableCell>
-                  {canWrite ? (
-                    <TableCell className="pr-4 text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setEditing(p)}
-                        aria-label={`Edit ${p.name}`}
-                      >
-                        Edit
-                      </Button>
+                  {hasActions ? (
+                    <TableCell className="pr-4 text-right whitespace-nowrap">
+                      {canWrite && !isErased(p) ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setEditing(p)}
+                          aria-label={`Edit ${p.name}`}
+                        >
+                          Edit
+                        </Button>
+                      ) : null}
+                      {canErase && !isSupplier(p) && !isErased(p) ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => setErasing(p)}
+                          aria-label={`Erase personal data of ${p.name}`}
+                        >
+                          Erase
+                        </Button>
+                      ) : null}
                     </TableCell>
                   ) : null}
                 </TableRow>
@@ -222,6 +249,15 @@ export function PartnersPage({ kind }: { kind: PartnerKind }) {
         wide
       >
         <PartnerForm kind={kind} partner={editing ?? null} onDone={() => setEditing(undefined)} />
+      </FormDialog>
+
+      <FormDialog
+        open={erasing !== null}
+        onOpenChange={(open) => !open && setErasing(null)}
+        title="Erase personal data"
+        description="Destroys this customer's encryption key. Their contact details, notes and the delivery addresses on past orders and shipments become permanently unreadable, including in backups. Orders, shipments and stock history are kept under the business name and code. This can't be undone."
+      >
+        {erasing ? <EraseCustomerForm customer={erasing} onDone={() => setErasing(null)} /> : null}
       </FormDialog>
     </>
   );
@@ -379,5 +415,88 @@ function PartnerForm({
         onCancel={onDone}
       />
     </>
+  );
+}
+
+function EraseCustomerForm({ customer, onDone }: { customer: CustomerDto; onDone: () => void }) {
+  const erase = useEraseCustomer();
+  const [reason, setReason] = useState('');
+  const [confirmCode, setConfirmCode] = useState('');
+  const [errors, setErrors] = useState<{ reason?: string; confirmCode?: string }>({});
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const submit = async () => {
+    const found = {
+      ...(reason.trim() ? {} : { reason: 'Enter the reason for erasing' }),
+      ...(confirmCode.trim().toUpperCase() === customer.code
+        ? {}
+        : { confirmCode: `Type ${customer.code} to confirm` }),
+    };
+    setErrors(found);
+    if (Object.keys(found).length > 0) return;
+    setFormError(null);
+    try {
+      await erase.mutateAsync({ id: customer.id, reason: reason.trim(), confirmCode });
+      toast.success(`Personal data of ${customer.name} erased`);
+      onDone();
+    } catch (error) {
+      const details = error instanceof ApiError ? error.details : [];
+      const fieldErrors = Object.fromEntries(
+        details
+          .filter((d) => d.path === 'reason' || d.path === 'confirmCode')
+          .map((d) => [d.path, d.message]),
+      );
+      setErrors(fieldErrors);
+      if (Object.keys(fieldErrors).length === 0) {
+        setFormError(
+          error instanceof ApiError ? error.message : 'Something went wrong. Try again.',
+        );
+      }
+    }
+  };
+
+  return (
+    <form
+      noValidate
+      className="grid gap-4"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      <FormAlert message={formError} />
+      <FormField id="erase-reason" label="Reason" error={errors.reason}>
+        <Textarea
+          {...fieldA11y('erase-reason', errors.reason)}
+          rows={2}
+          maxLength={500}
+          placeholder="For example: erasure request from the customer by email"
+          value={reason}
+          onChange={(event) => setReason(event.target.value)}
+        />
+      </FormField>
+      <FormField
+        id="erase-code"
+        label={`Type ${customer.code} to confirm`}
+        error={errors.confirmCode}
+      >
+        <Input
+          {...fieldA11y('erase-code', errors.confirmCode)}
+          className="font-mono uppercase"
+          autoComplete="off"
+          value={confirmCode}
+          onChange={(event) => setConfirmCode(event.target.value)}
+        />
+      </FormField>
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={onDone} disabled={erase.isPending}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="destructive" disabled={erase.isPending}>
+          {erase.isPending ? <Loader2 className="animate-spin" /> : null}
+          Erase personal data
+        </Button>
+      </DialogFooter>
+    </form>
   );
 }

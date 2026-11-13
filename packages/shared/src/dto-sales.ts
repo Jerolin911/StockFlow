@@ -40,6 +40,8 @@ export interface SalesOrderDto {
   orderDate: string;
   requiredDate: string | null;
   shippingAddress: string;
+  /** The customer's personal data was erased, so the shipping address can no longer be read. */
+  customerErased: boolean;
   customerReference: string;
   notes: string;
   lines: SalesOrderLineDto[];
@@ -103,6 +105,8 @@ export interface ShipmentDto {
   customer: PartnerRef;
   warehouse: WarehouseRef;
   shippingAddress: string;
+  /** The customer's personal data was erased, so the shipping address can no longer be read. */
+  customerErased: boolean;
   lines: ShipmentLineDto[];
   totals: { requested: number; picked: number | null };
   notes: string;

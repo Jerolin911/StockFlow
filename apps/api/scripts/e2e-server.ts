@@ -9,6 +9,8 @@ Object.assign(process.env, {
   PORT: process.env.E2E_API_PORT ?? '4100',
   MONGODB_URI: replSet.getUri('stockflow_e2e'),
   JWT_ACCESS_SECRET: randomBytes(32).toString('hex'),
+  DATA_ENCRYPTION_KEYS: `e2e:${randomBytes(32).toString('base64')}`,
+  BLIND_INDEX_KEY: randomBytes(32).toString('base64'),
   BCRYPT_ROUNDS: '4',
   LOGIN_RATE_LIMIT: '1000',
   LOG_LEVEL: 'error',

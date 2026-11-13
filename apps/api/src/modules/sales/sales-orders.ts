@@ -41,6 +41,12 @@ import {
   type Actor,
   type WarehouseLookup,
 } from '../common/documents.js';
+import {
+  openCustomerData,
+  openDocumentAddress,
+  sealDocumentAddress,
+} from '../privacy/customer-data.js';
+import { loadCustomerKeys, type CustomerKeys } from '../privacy/customer-keys.js';
 import { SalesOrder, Shipment, type SalesOrderRecord } from './models.js';
 
 type OrderInput = z.output<typeof salesOrderSchema>;
@@ -75,7 +81,11 @@ export function fulfilmentStatus(lines: LineQuantities[]): SalesOrderStatus {
   return sum((l) => l.deliveredQuantity) >= toShip ? 'delivered' : 'shipped';
 }
 
-export function toSalesOrderDto(so: SalesOrderRecord, warehouses: WarehouseLookup): SalesOrderDto {
+export function toSalesOrderDto(
+  so: SalesOrderRecord,
+  warehouses: WarehouseLookup,
+  customerKeys: CustomerKeys,
+): SalesOrderDto {
   const status = so.status as SalesOrderStatus;
   const open = isOpenOrder(status);
   const required = isoDate(so.requiredDate);
@@ -91,7 +101,7 @@ export function toSalesOrderDto(so: SalesOrderRecord, warehouses: WarehouseLooku
     warehouse: warehouseRef(warehouses, so.warehouseId),
     orderDate: so.orderDate.toISOString(),
     requiredDate: required,
-    shippingAddress: so.shippingAddress,
+    ...openDocumentAddress(customerKeys, so.customer._id, so.shippingAddress),
     customerReference: so.customerReference,
     notes: so.notes,
     lines: so.lines.map((l) => ({
@@ -137,7 +147,11 @@ export function toSalesOrderDto(so: SalesOrderRecord, warehouses: WarehouseLooku
 export async function getSalesOrder(id: string): Promise<SalesOrderDto> {
   const so = await SalesOrder.findById(id).lean<SalesOrderRecord>();
   if (!so) throw notFound('Sales order');
-  return toSalesOrderDto(so, await warehouseLookup([so.warehouseId]));
+  const [warehouses, keys] = await Promise.all([
+    warehouseLookup([so.warehouseId]),
+    loadCustomerKeys([so.customer._id]),
+  ]);
+  return toSalesOrderDto(so, warehouses, keys);
 }
 
 /** Prices lines from the product's selling price unless a price is given. */
@@ -174,11 +188,19 @@ async function orderFields(input: OrderInput, session?: ClientSession) {
   const customer = await requireActiveCustomer(input.customerId, session);
   await requireActiveWarehouse(input.warehouseId, session);
   const priced = await buildSalesLines(input.lines, session);
+  // The delivery address is personal data: it's stored encrypted with the customer's key.
+  const dataKey = (await loadCustomerKeys([customer._id], session)).get(input.customerId);
+  if (!dataKey) throw new Error(`Customer ${input.customerId} has no usable data key`);
+  const saved = openCustomerData(customer._id, dataKey, customer);
   return {
     customer: { _id: customer._id, code: customer.code, name: customer.name },
     warehouseId: new Types.ObjectId(input.warehouseId),
     requiredDate: input.requiredDate ? dateFromIso(input.requiredDate) : null,
-    shippingAddress: input.shippingAddress ?? (customer.shippingAddress || customer.address || ''),
+    shippingAddress: sealDocumentAddress(
+      customer._id,
+      dataKey,
+      input.shippingAddress ?? (saved.shippingAddress || saved.address),
+    ),
     customerReference: input.customerReference,
     notes: input.notes,
     ...priced,
@@ -425,9 +447,12 @@ export async function listSalesOrders(query: ListSalesOrdersQuery) {
       .lean<SalesOrderRecord[]>(),
     SalesOrder.countDocuments(filter),
   ]);
-  const warehouses = await warehouseLookup(rows.map((r) => r.warehouseId));
+  const [warehouses, keys] = await Promise.all([
+    warehouseLookup(rows.map((r) => r.warehouseId)),
+    loadCustomerKeys(rows.map((r) => r.customer._id)),
+  ]);
   return {
-    data: rows.map((so) => toSalesOrderDto(so, warehouses)),
+    data: rows.map((so) => toSalesOrderDto(so, warehouses, keys)),
     meta: { page: query.page, pageSize: query.pageSize, total },
   };
 }

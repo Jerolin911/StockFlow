@@ -191,7 +191,11 @@ function OrderDetail({ order: so }: { order: SalesOrderDto }) {
                 </Meta>
                 <div className="sm:col-span-2">
                   <Meta label="Shipping address">
-                    <span className="whitespace-pre-line">{so.shippingAddress || '—'}</span>
+                    <span className="whitespace-pre-line">
+                      {so.customerErased
+                        ? 'Erased at the customer’s request'
+                        : so.shippingAddress || '—'}
+                    </span>
                   </Meta>
                 </div>
                 <Meta label="Created by">{so.createdBy.name}</Meta>

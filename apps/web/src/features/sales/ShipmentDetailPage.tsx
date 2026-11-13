@@ -160,7 +160,11 @@ function Detail({ shipment: s }: { shipment: ShipmentDto }) {
                 </Meta>
                 <div className="sm:col-span-2">
                   <Meta label="Ship to">
-                    <span className="whitespace-pre-line">{s.shippingAddress || '—'}</span>
+                    <span className="whitespace-pre-line">
+                      {s.customerErased
+                        ? 'Erased at the customer’s request'
+                        : s.shippingAddress || '—'}
+                    </span>
                   </Meta>
                 </div>
                 <Meta label="Packages">

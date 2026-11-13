@@ -9,6 +9,8 @@
   },
   "include": [
     "src",
+    "scripts/privacy-encrypt-existing.ts",
+    "scripts/privacy-rotate-key.ts",
     "scripts/seed.ts",
     "scripts/seed-data.ts",
     "scripts/seed-history.ts",

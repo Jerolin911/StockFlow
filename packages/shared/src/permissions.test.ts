@@ -15,9 +15,10 @@ describe('role permissions', () => {
     }
   });
 
-  it('keeps user management admin-only', () => {
+  it('keeps user management and customer erasure admin-only', () => {
     for (const role of ROLES.filter((r) => r !== 'admin')) {
       expect(hasPermission(role, 'users:manage')).toBe(false);
+      expect(hasPermission(role, 'customers:erase')).toBe(false);
     }
   });
 

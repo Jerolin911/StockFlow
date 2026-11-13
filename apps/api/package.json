@@ -11,6 +11,10 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/src/server.js",
     "seed:dist": "node dist/scripts/seed.js",
+    "privacy:encrypt-existing": "tsx scripts/privacy-encrypt-existing.ts",
+    "privacy:encrypt-existing:dist": "node dist/scripts/privacy-encrypt-existing.js",
+    "privacy:rotate-key": "tsx scripts/privacy-rotate-key.ts",
+    "privacy:rotate-key:dist": "node dist/scripts/privacy-rotate-key.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },

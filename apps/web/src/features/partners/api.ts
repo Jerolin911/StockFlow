@@ -1,4 +1,4 @@
-import type { CustomerDto, SupplierDto } from '@stockflow/shared';
+import type { CustomerDto, EraseCustomerInput, SupplierDto } from '@stockflow/shared';
 import { apiRequest, type RequestOptions } from '@/lib/api-client';
 import { useApiMutation, useListQuery } from '@/lib/query';
 
@@ -18,4 +18,11 @@ export const useSavePartner = <K extends PartnerKind>(kind: K) =>
         body: input,
       }),
     [kind],
+  );
+
+export const useEraseCustomer = () =>
+  useApiMutation(
+    ({ id, ...input }: EraseCustomerInput & { id: string }) =>
+      apiRequest<{ data: CustomerDto }>(`/customers/${id}/erase`, { method: 'POST', body: input }),
+    ['customers', 'sales-orders', 'shipments'],
   );

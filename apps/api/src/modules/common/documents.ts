@@ -78,8 +78,10 @@ export async function requireActiveCustomer(id: string, session?: ClientSession)
       isActive: boolean;
       address?: string | null;
       shippingAddress?: string | null;
+      erasedAt?: Date | null;
     }>();
   if (!customer) throw validation('customerId', 'Customer not found');
+  if (customer.erasedAt) throw validation('customerId', "This customer's data was erased");
   if (!customer.isActive) throw validation('customerId', 'This customer is inactive');
   return customer;
 }

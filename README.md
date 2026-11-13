@@ -47,6 +47,7 @@ Small and mid-sized businesses often run stock on spreadsheets: nobody is sure w
 | **Dashboard & analytics** | Pending work across the business; inventory, procurement and sales analytics with date ranges, filters and CSV export; fast and slow movers; supplier on-time rates; fulfilment times                                  |
 | **Notifications**         | Approvals waiting for you, updates on documents you're involved in, and low-stock alerts                                                                                                                               |
 | **Administration**        | Users and roles, forced password change, session revocation, an audit log of every change and sign-in attempt                                                                                                          |
+| **Customer privacy**      | Customer contact details encrypted per customer; erasing a customer destroys their key, so their personal data is unreadable everywhere while orders and stock history stay intact                                     |
 | **API**                   | REST API under `/api/v1` with interactive Swagger documentation generated from the live routes                                                                                                                         |
 
 <table>
@@ -196,10 +197,18 @@ cd stockflow
 cp .env.example .env
 ```
 
-Open `.env` and set `JWT_ACCESS_SECRET` to a random string of at least 32 characters. To generate one (Node.js required):
+Open `.env` and set three secrets. `JWT_ACCESS_SECRET` is a random string of at least 32 characters; `DATA_ENCRYPTION_KEYS` and `BLIND_INDEX_KEY` protect customer personal data (see [Customer privacy](#customer-privacy)). To generate them (Node.js required), run each command and paste its output after the `=`:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+```
+
+```bash
+node -e "console.log('k1:' + require('crypto').randomBytes(32).toString('base64'))"
+```
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
 Then build, start and load the demo data:
@@ -232,7 +241,7 @@ npm install
 cp apps/api/.env.example apps/api/.env
 ```
 
-Set `JWT_ACCESS_SECRET` in `apps/api/.env` (same generator as above). MongoDB has to run as a replica set; choose one:
+Set `JWT_ACCESS_SECRET`, `DATA_ENCRYPTION_KEYS` and `BLIND_INDEX_KEY` in `apps/api/.env` (same generators as above). MongoDB has to run as a replica set; choose one:
 
 ```bash
 npm run db:local
@@ -266,18 +275,20 @@ This runs the source from your folder: the API restarts and the browser updates 
 
 **`.env` in the repository root** (read by `docker-compose.yml`; see [.env.example](.env.example)):
 
-| Variable                                            | Required | Default               | Purpose                                                                                                 |
-| --------------------------------------------------- | -------- | --------------------- | ------------------------------------------------------------------------------------------------------- |
-| `JWT_ACCESS_SECRET`                                 | Yes      | none                  | Signs access tokens. At least 32 random characters; changing it signs everyone out.                     |
-| `WEB_PORT`                                          | No       | `8080`                | Port for the web app and `/api`                                                                         |
-| `MONGO_PORT`                                        | No       | `27018`               | MongoDB published on 127.0.0.1 only, for tools such as Compass                                          |
-| `COOKIE_SECURE`                                     | No       | `true`                | Secure refresh cookie. Works on `localhost` and HTTPS; set `false` only for plain HTTP on another host. |
-| `API_DOCS`                                          | No       | `true`                | Serve Swagger UI and `/api/v1/openapi.json`                                                             |
-| `LOGIN_RATE_LIMIT`                                  | No       | `10`                  | Sign-in attempts per 15 minutes per IP and per email                                                    |
-| `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD` | No       | none                  | First admin, created only when there are no users                                                       |
-| `BOOTSTRAP_ADMIN_NAME`                              | No       | `Administrator`       | Display name for that admin                                                                             |
-| `SEED_PASSWORD`                                     | No       | `StockFlow-Demo-2026` | Password for the demo accounts                                                                          |
-| `API_IMAGE`, `WEB_IMAGE`                            | No       | local build           | Prebuilt images, for example from GHCR                                                                  |
+| Variable                                            | Required | Default               | Purpose                                                                                                                                             |
+| --------------------------------------------------- | -------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `JWT_ACCESS_SECRET`                                 | Yes      | none                  | Signs access tokens. At least 32 random characters; changing it signs everyone out.                                                                 |
+| `DATA_ENCRYPTION_KEYS`                              | Yes      | none                  | Master keys for customer personal data, `id:base64key`, comma-separated, active first. Back them up: losing them makes customer details unreadable. |
+| `BLIND_INDEX_KEY`                                   | Yes      | none                  | 32 bytes in base64 for exact email search over encrypted customers. Never change it.                                                                |
+| `WEB_PORT`                                          | No       | `8080`                | Port for the web app and `/api`                                                                                                                     |
+| `MONGO_PORT`                                        | No       | `27018`               | MongoDB published on 127.0.0.1 only, for tools such as Compass                                                                                      |
+| `COOKIE_SECURE`                                     | No       | `true`                | Secure refresh cookie. Works on `localhost` and HTTPS; set `false` only for plain HTTP on another host.                                             |
+| `API_DOCS`                                          | No       | `true`                | Serve Swagger UI and `/api/v1/openapi.json`                                                                                                         |
+| `LOGIN_RATE_LIMIT`                                  | No       | `10`                  | Sign-in attempts per 15 minutes per IP and per email                                                                                                |
+| `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD` | No       | none                  | First admin, created only when there are no users                                                                                                   |
+| `BOOTSTRAP_ADMIN_NAME`                              | No       | `Administrator`       | Display name for that admin                                                                                                                         |
+| `SEED_PASSWORD`                                     | No       | `StockFlow-Demo-2026` | Password for the demo accounts                                                                                                                      |
+| `API_IMAGE`, `WEB_IMAGE`                            | No       | local build           | Prebuilt images, for example from GHCR                                                                                                              |
 
 **`apps/api/.env`** (Node.js development; see [apps/api/.env.example](apps/api/.env.example)) also accepts `MONGODB_URI`, `PORT`, `ACCESS_TOKEN_TTL_SECONDS` (900), `REFRESH_TOKEN_TTL_DAYS` (7), `BCRYPT_ROUNDS` (12), `CORS_ORIGINS` (only for calling the API from another origin), `TRUST_PROXY` and `LOG_LEVEL`. The API refuses to start, naming the problem, if a value is missing or invalid.
 
@@ -428,6 +439,8 @@ The API trusts one proxy hop (`TRUST_PROXY=1`), so rate limits and the audit log
 | Restore | `docker compose exec -T mongo mongorestore --archive --gzip --drop < stockflow-2026-11-09.archive.gz` |
 | Upgrade | `git pull && docker compose up -d --build --wait` (or `docker compose pull` with prebuilt images)     |
 
+Back up `DATA_ENCRYPTION_KEYS` and `BLIND_INDEX_KEY` separately from the database (a secret manager or password vault). A database backup is useless without them, and a backup taken before a customer was erased still holds that customer's key: keep backup retention within your erasure deadline.
+
 Don't run the `seed` service in production: it erases the database. The seed script refuses to run with `NODE_ENV=production` unless that service's explicit `SEED_CONFIRM=reset` is set.
 
 **Managed MongoDB (Atlas or similar)**
@@ -509,18 +522,32 @@ stockflow/
 
 </details>
 
+<details>
+<summary><strong>Customer privacy</strong></summary>
+
+- A customer's contact name, email, phone, addresses and notes are encrypted (AES-256-GCM) with a key of their own, and so is the delivery address on their orders and shipments. The business name and code stay readable.
+- Customers are found by name, code or their **full** email address; contact names and phones can't be searched.
+- An admin can erase a customer's personal data on request (Customers → Erase), with a reason and the customer's code as confirmation. It is refused while they have open orders, undelivered shipments or open returns.
+- Erasing destroys the customer's key: their details and past delivery addresses become permanently unreadable, including in backups once the key's backups expire. Orders, shipments, returns, stock history and reports keep the business name and code. An erased customer can't be edited or sold to.
+- Rotating the master key: put the new key first in `DATA_ENCRYPTION_KEYS`, keep the old one after it, restart, run `npm run privacy:rotate-key -w @stockflow/api` (in Docker: `docker compose exec api node dist/scripts/privacy-rotate-key.js`), then remove the old key.
+- A database created before encryption existed is converted with `npm run privacy:encrypt-existing -w @stockflow/api` (in Docker: `docker compose exec api node dist/scripts/privacy-encrypt-existing.js`). It is safe to rerun.
+
+</details>
+
 ## Troubleshooting
 
-| Symptom                                                                         | Fix                                                                                                                                      |
-| ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `required variable JWT_ACCESS_SECRET is missing a value`                        | Create `.env` from `.env.example` and set `JWT_ACCESS_SECRET` (see [Quick start](#quick-start-with-docker)).                             |
-| `ports are not available` / `address already in use` for 8080                   | Another program uses the port. Set `WEB_PORT=8088` (or any free port) in `.env` and open that port instead.                              |
-| `Bind for 127.0.0.1:27017 failed` (dev stack)                                   | A local MongoDB is running. Stop it, or set `MONGO_DEV_PORT=27019` for `docker-compose.dev.yml`.                                         |
-| Docker commands fail with `cannot find the file specified` / engine pipe errors | Docker Desktop isn't running. Start it and wait until it reports the engine is running.                                                  |
-| API exits with `Invalid environment configuration`                              | The message names the variable: usually `JWT_ACCESS_SECRET` shorter than 32 characters or a missing `MONGODB_URI`.                       |
-| `Transaction numbers are only allowed on a replica set member`                  | MongoDB is running standalone. Use `npm run db:local`, the compose `mongo` service, or start `mongod --replSet rs0` and `rs.initiate()`. |
-| Signed out straight after signing in, over plain HTTP on a LAN address          | Browsers drop secure cookies on non-localhost HTTP. Use HTTPS, or set `COOKIE_SECURE=false` for that test setup only.                    |
-| Too many sign-in attempts                                                       | The limit resets after 15 minutes; raise `LOGIN_RATE_LIMIT` for demos with many sign-ins.                                                |
+| Symptom                                                                                                        | Fix                                                                                                                                                                                    |
+| -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `required variable JWT_ACCESS_SECRET is missing a value`                                                       | Create `.env` from `.env.example` and set `JWT_ACCESS_SECRET` (see [Quick start](#quick-start-with-docker)).                                                                           |
+| `ports are not available` / `address already in use` for 8080                                                  | Another program uses the port. Set `WEB_PORT=8088` (or any free port) in `.env` and open that port instead.                                                                            |
+| `Bind for 127.0.0.1:27017 failed` (dev stack)                                                                  | A local MongoDB is running. Stop it, or set `MONGO_DEV_PORT=27019` for `docker-compose.dev.yml`.                                                                                       |
+| Docker commands fail with `cannot find the file specified` / engine pipe errors                                | Docker Desktop isn't running. Start it and wait until it reports the engine is running.                                                                                                |
+| API exits with `Invalid environment configuration`                                                             | The message names the variable: usually `JWT_ACCESS_SECRET` shorter than 32 characters, a missing `MONGODB_URI`, or a missing or malformed `DATA_ENCRYPTION_KEYS` / `BLIND_INDEX_KEY`. |
+| API errors with `is wrapped by master key "…", which is not in DATA_ENCRYPTION_KEYS`                           | A master key was removed before rotation finished. Put it back after the active key and run `npm run privacy:rotate-key -w @stockflow/api`.                                            |
+| After upgrading, customer pages fail and the API logs `the stored value is not encrypted` or `has no data key` | The database predates encryption. Run `npm run privacy:encrypt-existing -w @stockflow/api`, or reseed a development database.                                                          |
+| `Transaction numbers are only allowed on a replica set member`                                                 | MongoDB is running standalone. Use `npm run db:local`, the compose `mongo` service, or start `mongod --replSet rs0` and `rs.initiate()`.                                               |
+| Signed out straight after signing in, over plain HTTP on a LAN address                                         | Browsers drop secure cookies on non-localhost HTTP. Use HTTPS, or set `COOKIE_SECURE=false` for that test setup only.                                                                  |
+| Too many sign-in attempts                                                                                      | The limit resets after 15 minutes; raise `LOGIN_RATE_LIMIT` for demos with many sign-ins.                                                                                              |
 
 ## Scope
 

@@ -16,6 +16,9 @@ export default defineConfig({
     env: {
       NODE_ENV: 'test',
       JWT_ACCESS_SECRET: 'test-secret-that-is-at-least-32-characters-long',
+      // Fixed test keys; tests that rotate keys pass their own keyring.
+      DATA_ENCRYPTION_KEYS: `test1:${Buffer.alloc(32, 1).toString('base64')}`,
+      BLIND_INDEX_KEY: Buffer.alloc(32, 2).toString('base64'),
       BCRYPT_ROUNDS: '4',
       LOGIN_RATE_LIMIT: '10',
     },

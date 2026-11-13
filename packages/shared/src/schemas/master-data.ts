@@ -191,6 +191,16 @@ export const updateCustomerSchema = z
   .object({ ...partnerFields, shippingAddress: optionalText(500), isActive: z.boolean() })
   .partial();
 
+/** Erasing is irreversible, so the customer's code must be typed back to confirm. */
+export const eraseCustomerSchema = z.object({
+  reason: requiredText('the reason for erasing', 500),
+  confirmCode: z
+    .string('Type the customer code to confirm')
+    .trim()
+    .min(1, 'Type the customer code to confirm')
+    .max(20),
+});
+
 export const listPartnersQuerySchema = paginationQuerySchema.extend({
   search: z.string().trim().max(100).optional(),
   status: statusFilter,
@@ -202,3 +212,4 @@ export type CreateCustomerInput = z.input<typeof createCustomerSchema>;
 export type UpdateSupplierInput = z.input<typeof updateSupplierSchema>;
 export type UpdateCustomerInput = z.input<typeof updateCustomerSchema>;
 export type ListPartnersQuery = z.infer<typeof listPartnersQuerySchema>;
+export type EraseCustomerInput = z.input<typeof eraseCustomerSchema>;

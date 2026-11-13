@@ -62,6 +62,8 @@ jobs:
     timeout-minutes: 30
     env:
       JWT_ACCESS_SECRET: ci-only-secret-0123456789abcdef0123456789abcdef
+      DATA_ENCRYPTION_KEYS: ci:Y2ktb25seS1lbmNyeXB0aW9uLWtleS1ub3Qtc2VjcnQ=
+      BLIND_INDEX_KEY: Y2ktb25seS1ibGluZC1pbmRleC1rZXktbm90LXNlY3I=
       SEED_PASSWORD: e2e-demo-password
       LOGIN_RATE_LIMIT: '1000'
       WEB_PORT: '8080'

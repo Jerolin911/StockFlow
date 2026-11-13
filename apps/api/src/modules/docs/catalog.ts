@@ -164,6 +164,10 @@ export const OPERATIONS: Record<string, OperationDoc> = {
   'GET /customers/:id': { summary: 'Get a customer' },
   'POST /customers': { summary: 'Create a customer', body: s.createCustomerSchema },
   'PATCH /customers/:id': { summary: 'Update a customer', body: s.updateCustomerSchema },
+  'POST /customers/:id/erase': {
+    summary: "Erase a customer's personal data (destroys their data key)",
+    body: s.eraseCustomerSchema,
+  },
 
   'GET /stock/levels': {
     summary: 'Stock levels per product × warehouse',
